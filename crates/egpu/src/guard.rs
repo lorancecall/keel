@@ -37,6 +37,7 @@ pub fn run(stop: impl Fn() -> bool) -> anyhow::Result<()> {
     let mut last: Vec<Adapter> = Vec::new();
     let mut games = GameWatch::new();
     let mut game: Option<(String, String)> = None;
+    let mut game_unload = Instant::now();
     let mut lock = cfg.gpu_lock.as_deref().map(GpuLock::new);
     // Telemetry for an eGPU without an NvGuard: (adapter LUID, ADLX or PDH backend).
     let mut mon: Option<(u64, Box<dyn GpuBackend>)> = None;
@@ -137,6 +138,12 @@ pub fn run(stop: impl Fn() -> bool) -> anyhow::Result<()> {
                 None => { log("game: exited"); if let Some(l) = lock.as_mut() { l.release(); } }
             }
             game = now_game;
+            game_unload = Instant::now();
+        } else if game.is_some() && game_unload.elapsed() >= Duration::from_secs(10) {
+            // A model loaded again during the game (another program asked Ollama) goes too.
+            game_unload = Instant::now();
+            let done = ollama_unload_all(&cfg.ollama_url);
+            if !done.is_empty() { log(format!("game: model loaded during the game, unloaded {done:?}")); }
         }
         let held = match (&game, lock.as_mut()) { (Some(_), Some(l)) => l.hold(), _ => false };
 

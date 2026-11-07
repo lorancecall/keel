@@ -6,6 +6,8 @@
   runs, on the eGPU or the built-in GPU, and come back when it exits (startup apps start again).
   A game is what the GPU apps page counts as one (game folders and programs); the switch is on
   that page. AI mode and game mode share the work: an app in both lists stays off until both end.
+- While a game runs, a model loaded again (another program asked Ollama) is unloaded within
+  10 seconds; before, models were unloaded only when the game started.
 
 ## 0.1.33
 
