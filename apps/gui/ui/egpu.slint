@@ -61,6 +61,7 @@ export global EgpuData {
     in property <float> amd-mhz-min: 500;
     in property <float> amd-mhz-max: 3000;
     in property <[AmdFeat]> amd-features;
+    in property <string> amd-refused;   // features the driver refused, hidden from the list
     in property <bool> amd-busy;
     // NVIDIA 3D settings (driver's global profile; written by the service)
     in property <bool> nv3d-ok;
@@ -394,6 +395,7 @@ export component EgpuPage inherits ScrollView {
                                     Switch { checked: f.on; enabled: !EgpuData.amd-busy; toggled => { EgpuData.amd-feature(f.name, self.checked); } }
                                 }
                                 Text { text: "Applied to this eGPU only; set again on every attach. Chill and Anti-Lag cannot both be on (the driver turns the other off)."; font-size: 11px; color: Palette.foreground.with-alpha(0.6); wrap: word-wrap; }
+                                if EgpuData.amd-refused != "" : Text { text: "Not offered by this driver: " + EgpuData.amd-refused + "."; font-size: 11px; color: Palette.foreground.with-alpha(0.6); wrap: word-wrap; }
                             }
                             if EgpuData.can-tune : VerticalLayout {
                                 spacing: 4px;

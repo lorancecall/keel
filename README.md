@@ -57,7 +57,8 @@ and a small amount of RAM working together: one background service, a tray icon 
   (Windows' per-app GPU choice), plus your own game folders and programs.
 - **Also:** memory history with leak detection, a tray panel, app icon colours, light and dark
   themes, and optional network routing (internet over Wi-Fi or LAN, a side and kill switch per
-  VPN, Wi-Fi kept on beside the LAN). Network routing is off until you set it up.
+  VPN, Wi-Fi kept on beside the LAN; any wired adapter, any Windows language). Network routing
+  is off until you set it up.
 
 ## Scenarios
 

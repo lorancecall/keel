@@ -26,6 +26,7 @@ fn show(ui: &MainWindow, t: Result<Tuning, String>) {
             d.set_amd_note(if t.power.is_none() && t.max_mhz.is_none() {
                 "This card's driver offers no power or clock tuning (common for mobile GPUs).".into()
             } else { Default::default() });
+            d.set_amd_refused(t.refused.join(", ").into());
             d.set_amd_features(ModelRc::new(VecModel::from(t.features.into_iter().map(|f| AmdFeat { name: f.name.into(), on: f.on }).collect::<Vec<_>>())));
         }
     }

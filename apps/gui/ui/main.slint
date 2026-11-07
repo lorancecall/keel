@@ -62,6 +62,8 @@ export component MainWindow inherits Window {
     in-out property <int> net-internet;
     in-out property <bool> net-enabled;
     in-out property <bool> net-keep-wifi;
+    in property <[string]> net-lans;   // LAN choices: "Any wired adapter", attached ones, a saved pattern
+    in-out property <int> net-lan;
     in property <[VpnRow]> vpn-list;
     in-out property <bool> add-open;
     in-out property <bool> net-dirty;
@@ -234,6 +236,13 @@ export component MainWindow inherits Window {
                                     ComboBox { model: ["Wi-Fi", "LAN"]; current-index <=> root.net-internet; width: 110px; selected => { root.net-dirty = true; } }
                                 }
                                 Text { text: "For non-VPN traffic. Falls back to the other when disconnected."; wrap: word-wrap; vertical-alignment: center; color: Palette.foreground.with-alpha(0.65); }
+                            }
+                            HorizontalLayout { spacing: 12px;
+                                HorizontalLayout { width: 230px; spacing: 8px;
+                                    Text { text: "LAN"; vertical-alignment: center; }
+                                    ComboBox { model: root.net-lans; current-index <=> root.net-lan; selected => { root.net-dirty = true; } }
+                                }
+                                Text { text: "The wired adapter used as LAN. Wi-Fi is found by itself."; wrap: word-wrap; vertical-alignment: center; color: Palette.foreground.with-alpha(0.65); }
                             }
                             HorizontalLayout { spacing: 12px;
                                 Switch { text: "Keep Wi-Fi with LAN"; checked <=> root.net-keep-wifi; width: 230px; toggled => { root.net-dirty = true; } }

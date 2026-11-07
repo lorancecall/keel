@@ -25,6 +25,18 @@ pub struct Tuning {
     pub features: Vec<Toggle>,
     /// Which tuning kinds the driver offers for this GPU (auto, preset, manual clocks / VRAM / fan / power).
     pub offers: Vec<String>,
+    /// Features the driver refused to switch on for this GPU; left out of `features`.
+    #[serde(default)]
+    pub refused: Vec<String>,
+}
+
+/// The message `set_feature` fails with when the driver will not switch a feature on.
+pub const REFUSED: &str = "the driver refused";
+
+/// Leaves the refused features out of the list and names them. Pure; tested.
+pub fn hide_refused(t: &mut Tuning, refused: &std::collections::BTreeSet<String>) {
+    t.features.retain(|f| !refused.contains(&f.name));
+    t.refused = refused.iter().cloned().collect();
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -108,7 +120,7 @@ unsafe fn toggle(a: &Adlx, name: &str, set: Option<bool>) -> Result<Option<bool>
                 let (mut sup, mut on) = (0u8, 0u8);
                 let r = if !ok((fv.IsSupported.unwrap())(p, &mut sup)) || sup == 0 { Ok(None) }
                     else if let Some(want) = set {
-                        if ok((fv.SetEnabled.unwrap())(p, want as u8)) { Ok(Some(want)) } else { Err(anyhow!("{name}: the driver refused")) }
+                        if ok((fv.SetEnabled.unwrap())(p, want as u8)) { Ok(Some(want)) } else { Err(anyhow!("{name}: {REFUSED}")) }
                     } else if ok((fv.IsEnabled.unwrap())(p, &mut on)) { Ok(Some(on != 0)) } else { Ok(None) };
                 release(p.cast());
                 r
@@ -223,6 +235,8 @@ pub fn reset(p: &GpuProfile) -> Result<()> {
 pub fn set_feature(p: &GpuProfile, name: &str, on: bool) -> Result<()> {
     let a = Adlx::open(p)?;
     match unsafe { toggle(&a, name, Some(on))? } {
+        // Some drivers accept the call and keep the feature off: that is a refusal too.
+        Some(_) if on && unsafe { toggle(&a, name, None) }.ok().flatten() == Some(false) => bail!("{name}: {REFUSED}"),
         Some(_) => Ok(()),
         None => bail!("{name} is not supported on {}", a.gpu().name().unwrap_or("this GPU")),
     }
@@ -230,6 +244,15 @@ pub fn set_feature(p: &GpuProfile, name: &str, on: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refused_features_are_hidden() {
+        let f = |n: &str| super::Toggle { name: n.into(), on: false };
+        let mut t = super::Tuning { features: vec![f("Chill"), f("Fluid Motion Frames")], ..Default::default() };
+        super::hide_refused(&mut t, &["Fluid Motion Frames".to_string()].into());
+        assert_eq!(t.features, [f("Chill")]);
+        assert_eq!(t.refused, ["Fluid Motion Frames"]);
+    }
+
     #[test]
     fn values_fit_the_range_and_step() {
         let r = super::Ranged { min: 500, max: 2700, step: 10, now: 2700 };

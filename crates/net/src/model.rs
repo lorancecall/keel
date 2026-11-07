@@ -69,8 +69,9 @@ pub struct Config {
     pub keep_wifi_with_lan: bool,
     /// Where general internet traffic goes while both sides are up.
     pub internet: Side,
+    /// The Wi-Fi adapter's name; empty (or no adapter of that name) = every Wi-Fi adapter.
     pub wifi_alias: String,
-    /// Wired adapters, by description (`*` wildcards).
+    /// Wired adapters, by description (`*` wildcards); empty = every physical wired adapter.
     pub lan_descriptions: Vec<String>,
     /// Interface metric of the follow side; 1-4, below the 5 Windows gives a gigabit LAN.
     pub top_metric: u32,
@@ -89,7 +90,9 @@ pub const TAILSCALED: &str = r"C:\Program Files\Tailscale\tailscaled.exe";
 impl Default for Config {
     /// A new install changes nothing: off and no VPNs until the user sets them up on the Network
     /// page (a `net.toml` written earlier keeps its values).
-    fn default() -> Self { Self { enabled: false, vpns: Vec::new(), ..Self::example() } }
+    fn default() -> Self {
+        Self { enabled: false, vpns: Vec::new(), wifi_alias: String::new(), lan_descriptions: Vec::new(), ..Self::example() }
+    }
 }
 
 impl Config {
@@ -111,6 +114,24 @@ impl Config {
     }
 }
 
+/// The Network page's LAN choices: labels, the `lan_descriptions` each one saves, and the current
+/// one. "Any wired adapter" first, then the attached wired adapters, then a saved pattern that
+/// is none of them (kept as it is). Pure; tested.
+pub fn lan_choices(wired: &[String], picked: &[String]) -> (Vec<String>, Vec<Vec<String>>, usize) {
+    let mut labels = vec!["Any wired adapter".to_string()];
+    let mut values = vec![Vec::new()];
+    for d in wired {
+        if !labels.contains(d) { labels.push(d.clone()); values.push(vec![d.clone()]); }
+    }
+    let at = values.iter().position(|v| v.len() == picked.len() && v.iter().zip(picked).all(|(a, b)| a.eq_ignore_ascii_case(b)));
+    let at = at.unwrap_or_else(|| {
+        labels.push(format!("{} (saved)", picked.join(", ")));
+        values.push(picked.to_vec());
+        values.len() - 1
+    });
+    (labels, values, at)
+}
+
 /// The VPN `tailscale_wifi_only` applies to.
 pub fn is_tailscale(v: &Vpn) -> bool {
     v.exe.to_lowercase().ends_with("tailscaled.exe") || v.name.eq_ignore_ascii_case("tailscale")
@@ -126,6 +147,23 @@ pub struct Adapter {
     pub up: bool,
     pub metric: u32,
     pub auto_metric: bool,
+    #[serde(default)]
+    pub kind: Kind,
+}
+
+/// What an adapter is, from its interface type (not its name, which depends on the language).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind { Wifi, Wired, #[default] Other }
+
+/// Interface type (IANA ifType) and description -> kind. Wired virtual adapters (Hyper-V, VPN
+/// taps, Bluetooth PAN) are not a LAN. Pure; tested.
+pub fn kind_of(if_type: u32, description: &str) -> Kind {
+    const VIRTUAL: [&str; 14] = ["virtual", "hyper-v", "vmware", "virtualbox", "tap-", "tap ", "wintun", "wireguard",
+                                 "tailscale", "bluetooth", "loopback", "vpn", "miniport", "kernel debug"];
+    let d = description.to_lowercase();
+    if VIRTUAL.iter().any(|v| d.contains(v)) { return Kind::Other; }
+    match if_type { 71 => Kind::Wifi, 6 => Kind::Wired, _ => Kind::Other }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,9 +279,13 @@ pub fn parse_prefix(s: &str) -> Option<(Ipv4Addr, u8)> {
 
 impl Snapshot {
     pub fn wifi(&self, cfg: &Config) -> Vec<&Adapter> {
-        self.adapters.iter().filter(|a| a.alias.eq_ignore_ascii_case(&cfg.wifi_alias)).collect()
+        let named: Vec<&Adapter> = self.adapters.iter()
+            .filter(|a| !cfg.wifi_alias.is_empty() && a.alias.eq_ignore_ascii_case(&cfg.wifi_alias)).collect();
+        if !named.is_empty() { return named; }
+        self.adapters.iter().filter(|a| a.kind == Kind::Wifi).collect()
     }
     pub fn lans(&self, cfg: &Config) -> Vec<&Adapter> {
+        if cfg.lan_descriptions.is_empty() { return self.adapters.iter().filter(|a| a.kind == Kind::Wired).collect(); }
         self.adapters.iter().filter(|a| cfg.lan_descriptions.iter().any(|p| glob(p, &a.description))).collect()
     }
     pub fn side(&self, cfg: &Config, s: Side) -> Vec<&Adapter> { match s { Side::Wifi => self.wifi(cfg), Side::Lan => self.lans(cfg) } }
@@ -408,7 +450,44 @@ mod tests {
     use super::*;
 
     fn ad(index: u32, alias: &str, desc: &str, up: bool, metric: u32) -> Adapter {
-        Adapter { index, alias: alias.into(), description: desc.into(), up, metric, auto_metric: true }
+        Adapter { index, alias: alias.into(), description: desc.into(), up, metric, auto_metric: true, kind: Kind::Other }
+    }
+
+    #[test]
+    fn lan_picker_choices() {
+        let wired = vec!["ASIX AX88179".to_string(), "Intel I225-V".to_string()];
+        let (l, v, at) = lan_choices(&wired, &[]);
+        assert_eq!((l.len(), at), (3, 0));
+        assert!(v[0].is_empty());
+        let (_, v, at) = lan_choices(&wired, &["intel i225-v".to_string()]);
+        assert_eq!(v[at], ["Intel I225-V"]);
+        let (l, v, at) = lan_choices(&wired, &["Realtek USB GbE*".to_string()]);
+        assert_eq!((l[at].as_str(), v[at][0].as_str()), ("Realtek USB GbE* (saved)", "Realtek USB GbE*"));
+    }
+
+    #[test]
+    fn adapters_found_by_type_on_any_windows() {
+        assert_eq!(kind_of(71, "MediaTek Wi-Fi 6E"), Kind::Wifi);
+        assert_eq!(kind_of(6, "Intel(R) Ethernet Controller I225-V"), Kind::Wired);
+        assert_eq!(kind_of(6, "Hyper-V Virtual Ethernet Adapter"), Kind::Other);
+        assert_eq!(kind_of(6, "Bluetooth Device (Personal Area Network)"), Kind::Other);
+        assert_eq!(kind_of(53, "Tailscale Tunnel"), Kind::Other);
+        assert_eq!(kind_of(71, "Microsoft Wi-Fi Direct Virtual Adapter #2"), Kind::Other);
+        assert_eq!(kind_of(6, "WAN Miniport (IP)"), Kind::Other);
+        assert_eq!(kind_of(6, "Cisco AnyConnect Virtual Miniport Adapter for Windows x64"), Kind::Other);
+        assert_eq!(kind_of(6, "Realtek USB GbE Family Controller"), Kind::Wired);
+        // German Windows: "WLAN" and "Ethernet 2"; a new config finds both by type.
+        let mut w = ad(3, "WLAN", "Intel Wi-Fi 6 AX201", true, 40); w.kind = Kind::Wifi;
+        let mut e = ad(4, "Ethernet 2", "ASIX AX88179 USB 3.0 to Gigabit Ethernet", true, 5); e.kind = Kind::Wired;
+        let mut v = ad(5, "vEthernet", "Hyper-V Virtual Ethernet Adapter", true, 15); v.kind = Kind::Other;
+        let s = Snapshot { adapters: vec![w, e, v], routes: vec![], policy: None, rules: vec![] };
+        let c = Config::default();
+        assert_eq!(s.wifi(&c).iter().map(|a| a.index).collect::<Vec<_>>(), [3]);
+        assert_eq!(s.lans(&c).iter().map(|a| a.index).collect::<Vec<_>>(), [4]);
+        // An old "Wi-Fi" alias that does not exist here falls back to the type; a picked LAN wins.
+        let c = Config { wifi_alias: "Wi-Fi".into(), lan_descriptions: vec!["ASIX*".into()], ..Config::default() };
+        assert_eq!(s.wifi(&c).len(), 1);
+        assert_eq!(s.lans(&c)[0].index, 4);
     }
     fn r(prefix: &str, index: u32, gw: &str, metric: u32) -> Route {
         let (p, l) = parse_prefix(prefix).unwrap();

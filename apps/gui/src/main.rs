@@ -125,6 +125,8 @@ struct Data {
     top: Vec<Family>,
     od: Option<State>,
     net: Option<NetConfig>,
+    /// What each LAN choice on the Network page saves as `lan_descriptions`.
+    net_lans: Vec<Vec<String>>,
     /// Column and direction each table is sorted by (overview, families, on-demand); kept across reloads.
     sorts: [Option<(usize, bool)>; 3],
 }
@@ -230,19 +232,26 @@ fn show_net(ui: &MainWindow, r: &Result<keel_net::service::Reply, String>, data:
             if r.pending.is_empty() { d.push("Routes and rules match the config.".into()); } else { d.push(format!("{} change(s) pending: {}", r.pending.len(), r.pending.join("; "))); }
             ui.set_net_detail(d.join("   ").into());
             ui.set_net_line(format!("Network: {}", r.summary).into());
-            if let Some(c) = &r.config { set_net_config(ui, c); data.lock().unwrap().net = Some(c.clone()); }
+            if let Some(c) = &r.config { set_net_config(ui, c, data); data.lock().unwrap().net = Some(c.clone()); }
         }
         Err(e) => {
             // No service: show the config as read (ProgramData\keel is readable) so it can be looked at.
             ui.set_net_summary("The Keel service is not running".into());
             ui.set_net_detail(if e.contains("not running") { "Showing net.toml as saved; Save and apply needs the service.".into() } else { e.clone().into() });
             ui.set_net_line("Network: the service is not running".into());
-            if let Ok(c) = keel_net::load_config() { set_net_config(ui, &c); data.lock().unwrap().net = Some(c); }
+            if let Ok(c) = keel_net::load_config() { set_net_config(ui, &c, data); data.lock().unwrap().net = Some(c); }
         }
     }
 }
 
-fn set_net_config(ui: &MainWindow, c: &NetConfig) {
+fn set_net_config(ui: &MainWindow, c: &NetConfig, data: &Arc<Mutex<Data>>) {
+    use keel_net::model::{Kind, lan_choices};
+    let wired: Vec<String> = keel_net::sys::adapters().unwrap_or_default().into_iter()
+        .filter(|a| a.kind == Kind::Wired).map(|a| a.description).collect();
+    let (labels, values, at) = lan_choices(&wired, &c.lan_descriptions);
+    ui.set_net_lans(ModelRc::new(VecModel::from(labels.into_iter().map(SharedString::from).collect::<Vec<_>>())));
+    ui.set_net_lan(at as i32);
+    data.lock().unwrap().net_lans = values;
     ui.set_net_internet(side_index(c.internet));
     ui.set_net_enabled(c.enabled);
     ui.set_net_keep_wifi(c.keep_wifi_with_lan);
@@ -881,6 +890,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_net_save(move || {
             let Some(ui) = w.upgrade() else { return };
             let mut c = d.lock().unwrap().net.clone().unwrap_or_default();
+            if let Some(v) = d.lock().unwrap().net_lans.get(ui.get_net_lan() as usize) { c.lan_descriptions = v.clone(); }
             c.internet = index_side(ui.get_net_internet());
             c.enabled = ui.get_net_enabled();
             c.keep_wifi_with_lan = ui.get_net_keep_wifi();

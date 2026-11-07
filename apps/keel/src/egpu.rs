@@ -106,10 +106,16 @@ fn amd_egpu() -> Result<config::GpuProfile> {
     Ok(p)
 }
 
-/// What the user set per AMD eGPU (`%LOCALAPPDATA%\keelmd-tuning.json`, key "VVVV:DDDD"), set
-/// again on each attach: drivers can drop manual tuning after a reset or an update.
+/// What the user set per AMD eGPU (`%LOCALAPPDATA%\keel\amd-tuning.json`, key "VVVV:DDDD"), set
+/// again on each attach: drivers can drop manual tuning after a reset or an update. `refused`:
+/// features the driver would not switch on, hidden from the window until one switches on.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone, Debug)]
-struct AmdSaved { power: Option<i32>, max_mhz: Option<i32>, #[serde(default)] features: std::collections::BTreeMap<String, bool> }
+struct AmdSaved {
+    power: Option<i32>,
+    max_mhz: Option<i32>,
+    #[serde(default)] features: std::collections::BTreeMap<String, bool>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")] refused: std::collections::BTreeSet<String>,
+}
 
 fn amd_saved_path() -> PathBuf { util::user_dir().join("amd-tuning.json") }
 fn amd_key(p: &config::GpuProfile) -> String { format!("{:04X}:{:04X}", p.vendor_id, p.device_id) }
@@ -122,7 +128,7 @@ fn amd_save(p: &config::GpuProfile, f: impl FnOnce(&mut AmdSaved)) -> Result<()>
     let mut all = amd_saved_all();
     let e = all.entry(amd_key(p)).or_default();
     f(e);
-    if e.power.is_none() && e.max_mhz.is_none() && e.features.is_empty() { all.remove(&amd_key(p)); }
+    if e.power.is_none() && e.max_mhz.is_none() && e.features.is_empty() && e.refused.is_empty() { all.remove(&amd_key(p)); }
     let path = amd_saved_path();
     if let Some(d) = path.parent() { std::fs::create_dir_all(d)?; }
     std::fs::write(path, serde_json::to_string_pretty(&all)?)?;
@@ -136,12 +142,14 @@ fn amd_tune(args: &[String]) -> Result<()> {
     let num = |key: &str| args.windows(2).find(|w| w[0] == key).map(|w| w[1].trim_end_matches('%').parse::<i32>()).transpose();
     match args.first().map(String::as_str) {
         None | Some("--json") => {
-            let t = keel_egpu::amdtune::read(&p)?;
+            let mut t = keel_egpu::amdtune::read(&p)?;
+            keel_egpu::amdtune::hide_refused(&mut t, &amd_saved_all().get(&amd_key(&p)).map(|s| s.refused.clone()).unwrap_or_default());
             if args.iter().any(|a| a == "--json") { println!("{}", serde_json::to_string(&t)?); return Ok(()); }
             println!("{}{}", t.gpu, if t.at_factory == Some(true) { " (factory settings)" } else { "" });
             match t.power { Some(r) => println!("power limit  {:+} % (range {:+}..{:+})", r.now, r.min, r.max), None => println!("power limit  not adjustable") }
             match t.max_mhz { Some(r) => println!("max clock    {} MHz (range {}..{})", r.now, r.min, r.max), None => println!("max clock    not adjustable") }
             for f in &t.features { println!("{:<24} {}", f.name, if f.on { "on" } else { "off" }); }
+            for n in &t.refused { println!("{n:<24} refused by the driver (hidden; `keel egpu amd-feature \"{n}\" on` tries again)"); }
             Ok(())
         }
         Some("set") => {
@@ -179,7 +187,15 @@ fn amd_feature(args: &[String]) -> Result<()> {
     let (Some(name), Some(state)) = (args.first(), args.get(1)) else { bail!("usage: keel egpu amd-feature <name> on|off") };
     let on = match state.as_str() { "on" => true, "off" => false, _ => bail!("on or off, not {state:?}") };
     let p = amd_egpu()?;
-    keel_egpu::amdtune::set_feature(&p, name, on)?;
+    if let Err(e) = keel_egpu::amdtune::set_feature(&p, name, on) {
+        if on && format!("{e:#}").contains(keel_egpu::amdtune::REFUSED) {
+            amd_save(&p, |s| { s.refused.insert(name.clone()); s.features.remove(name); })?;
+            amd_log(&[format!("{name}: {} (hidden from the list)", keel_egpu::amdtune::REFUSED)]);
+            bail!("{name}: {} on this GPU; hidden from the list", keel_egpu::amdtune::REFUSED);
+        }
+        return Err(e);
+    }
+    if on { amd_save(&p, |s| { s.refused.remove(name); })?; }
     // Save what the driver shows now for every remembered feature: switching one on can switch
     // another off (Chill and Anti-Lag), and the next attach must not set both.
     let now = keel_egpu::amdtune::read(&p).map(|t| t.features).unwrap_or_default();

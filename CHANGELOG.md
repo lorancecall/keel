@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.32
+
+- Network works with any wired adapter and on any Windows language: Wi-Fi and LAN are found by
+  adapter type, not by name ("Wi-Fi", "Realtek USB GbE"). The Network page has a LAN picker
+  (any wired adapter, or one of those attached); virtual adapters (Hyper-V, VPN, Bluetooth,
+  Wi-Fi Direct) are never taken for a LAN or Wi-Fi.
+- A Radeon feature the driver refuses to switch on (Fluid Motion Frames on some mobile GPUs) is
+  hidden from the list after the first try and named below it; `keel egpu amd-feature <name> on`
+  tries again (e.g. after a driver update).
+- Old names left from before Keel are gone from the code; the Legion Space marker is only
+  `atiadlxx.dll.keel`.
+
 ## 0.1.31
 
 - A new install changes no network settings: Network routing starts off with no VPNs (it used to

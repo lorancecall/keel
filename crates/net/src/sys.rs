@@ -54,6 +54,7 @@ pub fn adapters() -> Result<Vec<Adapter>> {
                 up: a.OperStatus == IfOperStatusUp,
                 metric: row.Metric,
                 auto_metric: row.UseAutomaticMetric,
+                kind: crate::model::kind_of(a.IfType, &wide(a.Description)),
             });
         }
         p = a.Next;

@@ -19,7 +19,7 @@ CONFIG (%ProgramData%\\keel\\net.toml)
   enabled = true
   keep_wifi_with_lan = true         Wi-Fi stays connected while Ethernet is up (after a reboot)
   internet = \"lan\" | \"wifi\"         where general internet goes while both are up
-  wifi_alias = \"Wi-Fi\"   lan_descriptions = [\"Realtek USB GbE*\"]   top_metric = 1
+  wifi_alias = \"\" (any Wi-Fi)   lan_descriptions = [] (any wired) or [\"Realtek USB GbE*\"]   top_metric = 1
   [[routes]] prefix = \"10.0.0.0/8\"  via = \"lan\"
   [[vpns]]   name, kind = \"default-route\" | \"server\", exe, adapter (description, * wildcards),
              via = \"wifi\" | \"lan\", kill_switch = true | false, servers = [\"a.b.c.d\"] (server kind)
