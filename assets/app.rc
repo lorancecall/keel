@@ -1,0 +1,7 @@
+// Keel icons (keel_core::build::embed_icon), made by make_icon.py.
+// 1: badge, dark glyph (the exe icon)  2: badge, white glyph
+// 3: the boat alone, dark (tray on a light taskbar)  4: the boat alone, white (tray on a dark taskbar)
+1 ICON "keel.ico"
+2 ICON "keel-light.ico"
+3 ICON "keel-tray.ico"
+4 ICON "keel-tray-light.ico"

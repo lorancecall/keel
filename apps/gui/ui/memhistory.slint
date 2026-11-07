@@ -1,0 +1,305 @@
+// Memory history: what kept growing over the tray's 5-minute samples. Summary cards, the suspects
+// (sparkline, growth per hour, since when), a detail chart of the selected one (values, the trend
+// line, display / power events as markers) with Watch / Ignore / Show in Apps, and a log drawer
+// (service + tray logs, filter and find). Data from src/memhistory.rs via MemHistData.
+import { Button, ComboBox, LineEdit, ListView, Switch, TextEdit, Palette } from "std-widgets.slint";
+
+export struct TrackRow { name: string, what: string, now: string, growth: string, since: string, status: int, ended: string, spark: string, watched: bool, app: bool }
+export struct Marker { x: float, label: string }
+
+export global MemHistData {
+    in property <int> leaks;
+    in property <int> rising;
+    in property <int> early;
+    // Running process names for "Follow a process", and the one-minute sampling switch.
+    in property <[string]> running;
+    in-out property <int> pick: -1;
+    in-out property <bool> fast;
+    callback watch-name(string);
+    callback fast-changed();
+    in property <int> watching;
+    in property <string> free;
+    in property <string> free-sub;
+    in property <string> note;
+    in property <[TrackRow]> rows;
+    in property <int> ignored;
+    in-out property <int> range: 0;          // 0 this session, 1 previous session, 2 last 24 hours, 3 last 7 days
+    in-out property <int> selected: -1;
+    // detail
+    in property <string> d-title;
+    in property <string> d-sub;
+    in property <string> d-path;
+    in property <string> d-trend;
+    in property <string> d-top;
+    in property <string> d-bottom;
+    in property <string> d-start;
+    in property <string> d-end;
+    in property <[Marker]> d-markers;
+    // log drawer
+    in-out property <bool> log-open;
+    in-out property <int> log-filter;        // 0 all, 1 memory, 2 eGPU, 3 network, 4 service
+    in-out property <string> log-find;
+    in property <string> log-text;
+    in property <string> log-note;
+
+    in-out property <bool> keep;             // Settings: keep a week of sessions
+    callback keep-changed();
+    callback reload();
+    callback select(int);
+    callback watch(int);
+    callback ignore(int);
+    callback clear-ignored();
+    callback show-app(int);
+    callback log-refresh();
+    callback log-folder();
+}
+
+global Tone {
+    out property <color> leak: Palette.color-scheme == ColorScheme.dark ? #ff6b6b : #c42b1c;
+    out property <color> rise: Palette.color-scheme == ColorScheme.dark ? #f2b05a : #b45309;
+    out property <color> watch: Palette.color-scheme == ColorScheme.dark ? #4ca6e8 : #0f6cbd;
+    out property <color> ok: Palette.color-scheme == ColorScheme.dark ? #4cc38a : #0e7c3a;
+    out property <color> event: Palette.color-scheme == ColorScheme.dark ? #b7a2f5 : #6b4fbb;
+}
+
+component Card inherits Rectangle {
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Palette.border;
+    background: Palette.control-background;
+    @children
+}
+
+component Stat inherits Card {
+    in property <string> label;
+    in property <string> value;
+    in property <string> sub;
+    in property <color> tone: Palette.foreground;
+    horizontal-stretch: 1;
+    min-width: 100px;
+    VerticalLayout { padding: 12px; spacing: 2px;
+        Text { text: label; font-size: 12px; font-weight: 600; color: Palette.foreground.with-alpha(0.65); }
+        Text { text: value; font-size: 24px; font-weight: 600; color: tone; }
+        Text { text: sub; font-size: 11px; color: Palette.foreground.with-alpha(0.6); overflow: elide; }
+    }
+}
+
+component Pill inherits Rectangle {
+    in property <int> status;          // 0 likely leak, 1 rising, 2 watching, 3 ended
+    in property <string> ended;
+    property <color> tone: status == 0 ? Tone.leak : (status == 1 || status == 4 ? Tone.rise : (status == 2 ? Tone.watch : Palette.foreground.with-alpha(0.55)));
+    height: 20px;
+    width: 86px;
+    border-radius: 10px;
+    background: tone.with-alpha(0.15);
+    Text { text: status == 0 ? "Likely leak" : (status == 1 ? "Rising" : (status == 2 ? "Watching" : (status == 4 ? "Early sign" : (status == 5 ? "Largest" : ended)))); font-size: 11px; font-weight: 600; color: tone; horizontal-alignment: center; vertical-alignment: center; }
+}
+
+component Head inherits Text {
+    font-size: 11px;
+    font-weight: 600;
+    color: Palette.foreground.with-alpha(0.6);
+    vertical-alignment: center;
+}
+
+export component MemHistoryPage inherits VerticalLayout {
+    spacing: 10px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        vertical-stretch: 0;
+        Text { text: "Memory history"; font-size: 24px; font-weight: 600; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        ComboBox {
+            width: 170px;
+            model: ["This session", "Previous session", "Last 24 hours", "Last 7 days"];
+            current-index <=> MemHistData.range;
+            selected => { MemHistData.reload(); }
+        }
+        Button {
+            text: MemHistData.log-open ? "Hide log" : "Log";
+            clicked => { MemHistData.log-open = !MemHistData.log-open; if (MemHistData.log-open) { MemHistData.log-refresh(); } }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 10px;
+        vertical-stretch: 0;
+        Stat { label: "LIKELY LEAKING"; value: MemHistData.leaks; sub: "steady growth of the floor"; tone: MemHistData.leaks > 0 ? Tone.leak : Palette.foreground; }
+        Stat { label: "RISING"; value: MemHistData.rising; sub: MemHistData.early > 0 ? "+ " + MemHistData.early + " early signs" : "growing unevenly"; tone: MemHistData.rising > 0 ? Tone.rise : Palette.foreground; }
+        Stat { label: "WATCHING"; value: MemHistData.watching; sub: "processes you follow"; tone: Tone.watch; }
+        Stat { label: "FREE NOW"; value: MemHistData.free; sub: MemHistData.free-sub; }
+    }
+
+    // Follow a process; sampling speed.
+    HorizontalLayout {
+        spacing: 8px;
+        vertical-stretch: 0;
+        Text { text: "Follow a process"; vertical-alignment: center; }
+        ComboBox { width: 220px; model: MemHistData.running; current-index <=> MemHistData.pick; }
+        Button {
+            text: "Watch";
+            enabled: MemHistData.pick >= 0;
+            clicked => { MemHistData.watch-name(MemHistData.running[MemHistData.pick]); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Switch { text: "Sample every minute"; checked <=> MemHistData.fast; toggled => { MemHistData.fast-changed(); } }
+    }
+
+    // Suspects table.
+    Card {
+        vertical-stretch: 1;
+        min-height: 150px;
+        VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+            HorizontalLayout {
+                padding-left: 8px; padding-right: 8px; spacing: 10px; height: 20px;
+                Head { text: "PROCESS"; width: 140px; }
+                Head { text: "WHAT"; horizontal-stretch: 1; }
+                Head { text: "TREND"; width: 76px; }
+                Head { text: "NOW"; width: 74px; horizontal-alignment: right;
+                    TouchArea { Tooltip { text: @markdown("Memory as Task Manager shows it; GPU rows: committed GPU memory."); } }
+                }
+                Head { text: "GROWTH"; width: 78px; horizontal-alignment: right; }
+                Head { text: "SINCE"; width: 70px; }
+                Head { text: "STATUS"; width: 86px; }
+            }
+            if MemHistData.rows.length == 0 : Text {
+                text: MemHistData.note;
+                color: Palette.foreground.with-alpha(0.65);
+                wrap: word-wrap;
+                vertical-stretch: 1;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            if MemHistData.rows.length > 0 : ListView {
+                vertical-stretch: 1;
+                for r[i] in MemHistData.rows : Rectangle {
+                    height: 36px;
+                    border-radius: 6px;
+                    background: i == MemHistData.selected ? Palette.selection-background.with-alpha(0.25) : (ta.has-hover ? Palette.foreground.with-alpha(0.05) : transparent);
+                    ta := TouchArea { clicked => { MemHistData.select(i); } }
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 10px;
+                        Text { text: (r.watched ? "★ " : "") + r.name; width: 140px; overflow: elide; vertical-alignment: center; font-weight: 600; }
+                        Text { text: r.what; horizontal-stretch: 1; min-width: 96px; overflow: elide; vertical-alignment: center; color: Palette.foreground.with-alpha(0.75); font-size: 12px; }
+                        Rectangle { width: 76px;
+                            Path {
+                                width: 100%; height: 24px; viewbox-width: 600; viewbox-height: 200; fit: fill;
+                                stroke: r.status == 0 ? Tone.leak : (r.status == 1 || r.status == 4 ? Tone.rise : (r.status == 2 ? Tone.watch : Palette.foreground.with-alpha(0.5)));
+                                stroke-width: 1.4px; fill: transparent; commands: r.spark;
+                                visible: r.spark != "";
+                            }
+                        }
+                        Text { text: r.now; width: 74px; horizontal-alignment: right; vertical-alignment: center; }
+                        Text { text: r.growth; width: 78px; horizontal-alignment: right; vertical-alignment: center;
+                               color: r.status == 0 ? Tone.leak : (r.status == 1 ? Tone.rise : Palette.foreground.with-alpha(0.75)); }
+                        Text { text: r.since; width: 70px; vertical-alignment: center; color: Palette.foreground.with-alpha(0.75); font-size: 12px; }
+                        Rectangle { width: 86px; Pill { status: r.status; ended: r.ended; } }
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 8px; spacing: 8px; height: 26px;
+                Text { text: MemHistData.rows.length > 0 ? MemHistData.note : ""; font-size: 11px; color: Palette.foreground.with-alpha(0.6); vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                if MemHistData.ignored > 0 : Text { text: MemHistData.ignored + " ignored"; font-size: 11px; color: Palette.foreground.with-alpha(0.6); vertical-alignment: center; }
+                if MemHistData.ignored > 0 : Button { text: "Show again"; clicked => { MemHistData.clear-ignored(); } }
+            }
+        }
+    }
+
+    // Detail of the selected row.
+    if !MemHistData.log-open && MemHistData.selected >= 0 && MemHistData.selected < MemHistData.rows.length : Card {
+        height: 250px;
+        vertical-stretch: 0;
+        property <TrackRow> cur: MemHistData.rows[MemHistData.selected];
+        VerticalLayout {
+            padding: 12px;
+            spacing: 6px;
+            HorizontalLayout { spacing: 8px;
+                VerticalLayout { spacing: 2px; horizontal-stretch: 1;
+                    Text { text: MemHistData.d-title; font-size: 15px; font-weight: 600; overflow: elide; }
+                    Text { text: MemHistData.d-sub; font-size: 12px; color: Palette.foreground.with-alpha(0.7); overflow: elide; }
+                }
+                Button { text: cur.watched ? "Unwatch" : "Watch"; clicked => { MemHistData.watch(MemHistData.selected); } }
+                Button { text: "Ignore"; clicked => { MemHistData.ignore(MemHistData.selected); } }
+                Button { text: "Show in Apps"; enabled: cur.app; clicked => { MemHistData.show-app(MemHistData.selected); } }
+            }
+            HorizontalLayout { spacing: 6px; vertical-stretch: 1;
+                VerticalLayout { width: 64px;
+                    Text { text: MemHistData.d-top; font-size: 10px; horizontal-alignment: right; color: Palette.foreground.with-alpha(0.6); }
+                    Rectangle { vertical-stretch: 1; }
+                    Text { text: MemHistData.d-bottom; font-size: 10px; horizontal-alignment: right; color: Palette.foreground.with-alpha(0.6); }
+                }
+                VerticalLayout { spacing: 2px; horizontal-stretch: 1;
+                    chart := Rectangle {
+                        vertical-stretch: 1;
+                        border-width: 1px;
+                        border-color: Palette.foreground.with-alpha(0.12);
+                        border-radius: 4px;
+                        for m in MemHistData.d-markers : Rectangle {
+                            x: chart.width * m.x;
+                            width: 9px;
+                            height: chart.height;
+                            Rectangle { x: 4px; width: 1px; background: Tone.event.with-alpha(0.55); }
+                            mt := TouchArea { }
+                            if mt.has-hover : Rectangle {
+                                x: m.x > 0.6 ? -200px : 10px; y: 6px; width: 196px; height: 22px; border-radius: 4px;
+                                background: Palette.background; border-width: 1px; border-color: Tone.event;
+                                Text { text: m.label; font-size: 11px; overflow: elide; width: parent.width - 8px; }
+                            }
+                        }
+                        Path { width: 100%; height: 100%; viewbox-width: 600; viewbox-height: 200; fit: fill; stroke: Palette.foreground.with-alpha(0.45);
+                               stroke-width: 1px; fill: transparent; commands: MemHistData.d-trend; visible: MemHistData.d-trend != ""; }
+                        Path { width: 100%; height: 100%; viewbox-width: 600; viewbox-height: 200; fit: fill;
+                               stroke: cur.status == 0 ? Tone.leak : (cur.status == 1 || cur.status == 4 ? Tone.rise : (cur.status == 2 ? Tone.watch : Palette.foreground.with-alpha(0.6)));
+                               stroke-width: 1.8px; fill: transparent; commands: MemHistData.d-path; visible: MemHistData.d-path != ""; }
+                    }
+                    HorizontalLayout {
+                        Text { text: MemHistData.d-start; font-size: 10px; color: Palette.foreground.with-alpha(0.6); }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: "grey: trend · purple: display / power events"; font-size: 10px; color: Palette.foreground.with-alpha(0.5); }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: MemHistData.d-end; font-size: 10px; color: Palette.foreground.with-alpha(0.6); }
+                    }
+                }
+            }
+        }
+    }
+
+    // Log drawer.
+    if MemHistData.log-open : Card {
+        height: 280px;
+        vertical-stretch: 0;
+        VerticalLayout {
+            padding: 10px;
+            spacing: 6px;
+            HorizontalLayout { spacing: 8px;
+                Text { text: "Log"; font-size: 15px; font-weight: 600; vertical-alignment: center; }
+                ComboBox {
+                    width: 130px;
+                    model: ["All", "Memory", "External GPU", "Network", "Service"];
+                    current-index <=> MemHistData.log-filter;
+                    selected => { MemHistData.log-refresh(); }
+                }
+                LineEdit {
+                    placeholder-text: "Find";
+                    text <=> MemHistData.log-find;
+                    edited => { MemHistData.log-refresh(); }
+                }
+                Button { text: "Copy"; clicked => { log-view.select-all(); log-view.copy(); log-view.clear-selection(); } }
+                Button { text: "Open folder"; clicked => { MemHistData.log-folder(); } }
+                Button { text: "Refresh"; clicked => { MemHistData.log-refresh(); } }
+            }
+            log-view := TextEdit {
+                vertical-stretch: 1;
+                read-only: true;
+                font-size: 11px;
+                font-family: "Consolas";
+                text: MemHistData.log-text;
+            }
+            Text { text: MemHistData.log-note; font-size: 11px; color: Palette.foreground.with-alpha(0.6); overflow: elide; }
+        }
+    }
+}

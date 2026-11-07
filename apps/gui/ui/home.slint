@@ -1,0 +1,246 @@
+// Home: widgets the user can show or hide (Widgets button): Memory, External GPU, Network. Every
+// card reads the same way: title and a status chip, one headline value, then labelled rows and a
+// small chart, and a button into its page. The service's features are chips under the title.
+// Data from src/home.rs via HomeData.
+import { Button, CheckBox, Palette, ScrollView } from "std-widgets.slint";
+
+export struct Light { label: string, state: int, tip: string }      // state 0 ok, 1 waiting / restarting, 2 off / down
+export struct Line { label: string, text: string, frac: float, warn: bool }
+
+export global HomeData {
+    in property <[Light]> lights;
+    // memory
+    in property <string> mem-free;
+    in property <string> mem-sub;
+    in property <float> mem-frac;
+    in property <string> commit-text;
+    in property <float> commit-frac;
+    in property <string> mem-path;
+    in property <string> mem-note;
+    in property <[Line]> top;
+    in property <string> bg-note;
+    // external GPU
+    in property <bool> egpu-on;
+    in property <string> egpu-name;
+    in property <[Line]> egpu-lines;
+    in property <string> egpu-path;
+    in property <string> egpu-note;
+    in property <[Line]> egpu-facts;
+    // network
+    in property <bool> net-on;
+    in property <string> net-summary;     // headline: where internet goes now
+    in property <string> net-sub;         // one line under it (why)
+    in property <[Line]> net-lines;
+    in property <string> net-note;
+    in property <bool> net-warn;
+    in property <int> net-state;          // 0 matches the config, 1 changes pending, 2 problem / service down
+    // widgets
+    in-out property <bool> w-mem: true;
+    in-out property <bool> w-egpu: true;
+    in-out property <bool> w-net: true;
+    // Widget order (ids "memory", "egpu", "network"), moved with the arrows in the Widgets menu.
+    in property <[string]> order: ["memory", "egpu", "network"];
+    callback widgets-changed();
+    callback move-widget(int, int);
+}
+
+global Colors {
+    out property <color> ok: Palette.color-scheme == ColorScheme.dark ? #4cc38a : #0e7c3a;
+    out property <color> wait: Palette.color-scheme == ColorScheme.dark ? #f2b05a : #b45309;
+    out property <color> bad: Palette.color-scheme == ColorScheme.dark ? #ff6b6b : #c42b1c;
+    out property <color> accent: Palette.color-scheme == ColorScheme.dark ? #4ca6e8 : #0f6cbd;
+    out property <color> power: Palette.color-scheme == ColorScheme.dark ? #f2894f : #c2410c;
+    out property <color> muted: Palette.foreground.with-alpha(0.6);
+}
+
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <int> state;              // 0 ok, 1 amber, 2 red, 3 neutral
+    property <color> tone: state == 0 ? Colors.ok : (state == 1 ? Colors.wait : (state == 2 ? Colors.bad : Colors.muted));
+    height: 22px;
+    width: label.preferred-width + 32px;
+    border-radius: 11px;
+    background: tone.with-alpha(0.13);
+    Rectangle { x: 9px; y: 7px; width: 8px; height: 8px; border-radius: 4px; background: root.tone; }
+    label := Text { x: 23px; text: root.text; font-size: 11px; font-weight: 600; color: root.tone; vertical-alignment: center; height: parent.height; }
+    @children
+}
+
+// One widget: title and status chip, the body, then a button into its page. All widgets get the
+// same width (stretch from a small preferred width).
+component Widget inherits Rectangle {
+    in property <string> title;
+    in property <string> chip;
+    in property <int> chip-state;
+    in property <string> open;
+    in property <string> open2;
+    callback opened();
+    callback opened2();
+    horizontal-stretch: 1;
+    preferred-width: 100px;
+    min-width: 220px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Palette.border;
+    background: Palette.control-background;
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        HorizontalLayout { spacing: 8px; height: 26px;
+            Text { text: root.title; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            if root.chip != "" : VerticalLayout { alignment: center; Chip { text: root.chip; state: root.chip-state; } }
+        }
+        VerticalLayout { spacing: 10px; alignment: start; vertical-stretch: 0; @children }
+        // Buttons sit at the bottom, on one line across the widgets: only the spacer stretches.
+        Rectangle { vertical-stretch: 1; }
+        if root.open != "" : HorizontalLayout { alignment: start; spacing: 8px; vertical-stretch: 0; height: 32px;
+            Button { text: root.open; clicked => { root.opened(); } }
+            if root.open2 != "" : Button { text: root.open2; clicked => { root.opened2(); } }
+        }
+    }
+}
+
+component Headline inherits VerticalLayout {
+    in property <string> value;
+    in property <string> sub;
+    in property <length> size: 24px;
+    spacing: 0px;
+    Text { text: value; font-size: size; font-weight: 600; overflow: elide; }
+    Text { text: sub; font-size: 12px; color: Colors.muted; wrap: word-wrap; }
+}
+
+component Section inherits Text {
+    font-size: 11px;
+    font-weight: 700;
+    color: Colors.muted;
+}
+
+// Label and value; a bar under it when `frac` >= 0.
+component Row inherits VerticalLayout {
+    in property <Line> l;
+    spacing: 3px;
+    HorizontalLayout { spacing: 8px;
+        Text { text: l.label; font-size: 12px; color: Palette.foreground.with-alpha(0.75); overflow: elide; horizontal-stretch: 1; }
+        Text { text: l.text; font-size: 12px; font-weight: 600; color: l.warn ? Colors.bad : Palette.foreground; horizontal-alignment: right; }
+    }
+    if l.frac >= 0 : Rectangle {
+        height: 5px; border-radius: 3px; background: Palette.foreground.with-alpha(0.1);
+        Rectangle { x: 0; height: 5px; border-radius: 3px; width: parent.width * max(0.0, min(1.0, l.frac)); background: l.warn ? Colors.bad : Colors.accent; }
+    }
+}
+
+component Spark inherits VerticalLayout {
+    in property <string> path;
+    in property <color> tone;
+    in property <string> caption;
+    spacing: 2px;
+    Rectangle {
+        height: 46px;
+        border-radius: 4px;
+        background: Palette.foreground.with-alpha(0.03);
+        if path != "" : Path {
+            width: 100%; height: 100%; viewbox-width: 600; viewbox-height: 200; fit: fill;
+            stroke: tone; stroke-width: 1.6px; fill: transparent; commands: path;
+        }
+    }
+    Text { text: caption; font-size: 11px; color: Colors.muted; overflow: elide; }
+}
+
+export component HomePage inherits VerticalLayout {
+    callback go(int);
+    spacing: 14px;
+
+    HorizontalLayout {
+        spacing: 12px;
+        VerticalLayout { spacing: 6px;
+            Text { text: "Home"; font-size: 24px; font-weight: 600; }
+            // The service's features, one chip each (hover for the detail).
+            HorizontalLayout { spacing: 6px; alignment: start;
+                Text { text: "Service"; font-size: 12px; color: Colors.muted; vertical-alignment: center; }
+                for l in HomeData.lights : Chip {
+                    text: l.label;
+                    state: l.state;
+                    TouchArea { Tooltip { text: @markdown("\{l.tip}"); } }
+                }
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout { alignment: start; Button { text: "Widgets"; clicked => { picker.show(); } } }
+    }
+
+    picker := PopupWindow {
+        x: parent.width - 280px; y: 44px; width: 260px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Palette.background; border-radius: 8px; border-width: 1px; border-color: Palette.border;
+            VerticalLayout {
+                padding: 12px; spacing: 6px;
+                Text { text: "Show on Home"; font-weight: 600; }
+                for id[n] in HomeData.order : HorizontalLayout { spacing: 4px;
+                    if id == "memory" : CheckBox { text: "Memory"; checked <=> HomeData.w-mem; toggled => { HomeData.widgets-changed(); } horizontal-stretch: 1; }
+                    if id == "egpu" : CheckBox { text: "External GPU"; checked <=> HomeData.w-egpu; toggled => { HomeData.widgets-changed(); } horizontal-stretch: 1; }
+                    if id == "network" : CheckBox { text: "Network"; checked <=> HomeData.w-net; toggled => { HomeData.widgets-changed(); } horizontal-stretch: 1; }
+                    Button { text: "↑"; width: 32px; enabled: n > 0; clicked => { HomeData.move-widget(n, -1); } }
+                    Button { text: "↓"; width: 32px; enabled: n < HomeData.order.length - 1; clicked => { HomeData.move-widget(n, 1); } }
+                }
+            }
+        }
+    }
+
+    // In a scroll view: every card gets the tallest card's height, so the buttons line up
+    // even when the window is too short for the Memory card.
+    ScrollView {
+        vertical-stretch: 1;
+        HorizontalLayout {
+            spacing: 12px;
+
+            // One slot per widget, in the user's order; a hidden widget's slot takes no width.
+            for id in HomeData.order : HorizontalLayout {
+                horizontal-stretch: (id == "memory" && HomeData.w-mem) || (id == "egpu" && HomeData.w-egpu) || (id == "network" && HomeData.w-net) ? 1 : 0;
+                if id == "memory" && HomeData.w-mem : Widget {
+                    title: "Memory";
+                    chip: HomeData.mem-frac >= 0.9 ? "Low" : (HomeData.mem-frac >= 0.8 ? "Tight" : "OK");
+                    chip-state: HomeData.mem-frac >= 0.9 ? 2 : (HomeData.mem-frac >= 0.8 ? 1 : 0);
+                    open: "Apps";
+                    opened => { root.go(1); }
+                    open2: "Memory history";
+                    opened2 => { root.go(3); }
+                    Headline { value: HomeData.mem-free; sub: HomeData.mem-sub; }
+                    Row { l: { label: "Used", text: round(HomeData.mem-frac * 100) + " %", frac: HomeData.mem-frac, warn: HomeData.mem-frac >= 0.9 }; }
+                    Row { l: { label: "Commit", text: HomeData.commit-text, frac: HomeData.commit-frac, warn: HomeData.commit-frac >= 0.9 }; }
+                    Spark { path: HomeData.mem-path; tone: Colors.accent; caption: HomeData.mem-note; }
+                    Section { text: "LARGEST APPS (AS TASK MANAGER)"; }
+                    for l in HomeData.top : Row { l: l; }
+                    Text { text: HomeData.bg-note; font-size: 12px; color: Palette.foreground.with-alpha(0.75); wrap: word-wrap; }
+                }
+                if id == "egpu" && HomeData.w-egpu : Widget {
+                    title: "External GPU";
+                    chip: HomeData.egpu-on ? "Attached" : "Not attached";
+                    chip-state: HomeData.egpu-on ? 0 : 3;
+                    open: "External GPU";
+                    opened => { root.go(4); }
+                    Headline { size: 18px; value: HomeData.egpu-name; sub: HomeData.egpu-on ? "" : HomeData.egpu-note; }
+                    for l in HomeData.egpu-lines : Row { l: l; }
+                    if HomeData.egpu-on : Spark { path: HomeData.egpu-path; tone: Colors.power; caption: "Power, last 5 minutes"; }
+                    for l in HomeData.egpu-facts : Row { l: l; }
+                }
+                if id == "network" && HomeData.w-net : Widget {
+                    title: "Network";
+                    chip: HomeData.net-state == 0 ? "As set" : (HomeData.net-state == 1 ? "Applying" : "Check");
+                    chip-state: HomeData.net-state;
+                    open: "Network";
+                    opened => { root.go(7); }
+                    Headline { value: HomeData.net-summary; sub: HomeData.net-sub; }
+                    for l in HomeData.net-lines : Row { l: l; }
+                    Text { text: HomeData.net-note; font-size: 12px; wrap: word-wrap; color: HomeData.net-warn ? Colors.bad : Palette.foreground.with-alpha(0.75); }
+                }
+            }
+        }
+    }
+
+    if !HomeData.w-mem && !HomeData.w-egpu && !HomeData.w-net : Text {
+        text: "All widgets hidden. Use Widgets to show them.";
+        color: Colors.muted;
+    }
+}

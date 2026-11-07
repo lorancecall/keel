@@ -1,0 +1,16 @@
+[package]
+name = "keel-service"
+version.workspace = true
+edition.workspace = true
+description = "Keel service: the features on supervised threads, the control pipe, install / uninstall"
+
+[dependencies]
+keel-core.workspace = true
+keel-ram.workspace = true
+keel-egpu.workspace = true
+keel-net.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+windows-service.workspace = true

@@ -1,0 +1,111 @@
+// Displays: one card per active display (built-in screen, eGPU monitors, others) with its mode,
+// Windows scale, main display and integer scaling. Mode and eGPU integer scaling changes go to the
+// tray (its keep-or-go-back box and records); the built-in screen's integer scaling is the iGPU
+// driver's switch (ADLX). Data from src/displays.rs via DisplaysData.
+import { Button, ComboBox, Switch, ScrollView, Palette } from "std-widgets.slint";
+
+export struct DisplayCard {
+    name: string,
+    sub: string,
+    kind: int,              // 0 built-in screen, 1 eGPU monitor, 2 other
+    main: bool,
+    modes: [string],
+    mode-index: int,
+    scale: string,
+    int-on: bool,
+    int-ok: bool,
+    int-note: string,
+}
+
+export global DisplaysData {
+    in property <[DisplayCard]> cards;
+    in property <string> note;
+    in property <string> result;
+    callback refresh();
+    callback set-mode(int, int);
+    callback integer(int, bool);
+    callback make-main(int);
+}
+
+component Card inherits Rectangle {
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Palette.border;
+    background: Palette.control-background;
+    @children
+}
+
+component Tag inherits Rectangle {
+    in property <string> text;
+    in property <color> tone;
+    height: 20px;
+    width: t.preferred-width + 16px;
+    border-radius: 10px;
+    background: tone.with-alpha(0.15);
+    t := Text { text: root.text; font-size: 11px; font-weight: 600; color: tone; horizontal-alignment: center; vertical-alignment: center; }
+}
+
+global Tone {
+    out property <color> main: Palette.color-scheme == ColorScheme.dark ? #4ca6e8 : #0f6cbd;
+    out property <color> egpu: Palette.color-scheme == ColorScheme.dark ? #f2894f : #c2410c;
+    out property <color> builtin: Palette.color-scheme == ColorScheme.dark ? #4cc38a : #0e7c3a;
+    out property <color> other: Palette.foreground.with-alpha(0.6);
+}
+
+export component DisplaysPage inherits VerticalLayout {
+    spacing: 10px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        vertical-stretch: 0;
+        Text { text: "Displays"; font-size: 24px; font-weight: 600; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        Text { text: DisplaysData.result; color: Palette.foreground.with-alpha(0.65); vertical-alignment: center; overflow: elide; max-width: 420px; }
+    }
+    Text { text: DisplaysData.note; color: Palette.foreground.with-alpha(0.65); wrap: word-wrap; vertical-stretch: 0; }
+
+    ScrollView {
+        vertical-stretch: 1;
+        VerticalLayout {
+            spacing: 10px;
+            alignment: start;
+            for c[i] in DisplaysData.cards : Card {
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 8px;
+                    HorizontalLayout { spacing: 8px;
+                        Text { text: c.name; font-size: 16px; font-weight: 600; vertical-alignment: center; overflow: elide; }
+                        VerticalLayout { alignment: center;
+                            Tag { text: c.kind == 0 ? "Built-in screen" : (c.kind == 1 ? "eGPU" : "Other GPU");
+                                  tone: c.kind == 0 ? Tone.builtin : (c.kind == 1 ? Tone.egpu : Tone.other); }
+                        }
+                        if c.main : VerticalLayout { alignment: center; Tag { text: "Main display"; tone: Tone.main; } }
+                        Rectangle { horizontal-stretch: 1; }
+                        Button { text: "Make main display"; enabled: !c.main; clicked => { DisplaysData.make-main(i); } }
+                    }
+                    Text { text: c.sub; font-size: 12px; color: Palette.foreground.with-alpha(0.7); wrap: word-wrap; }
+                    HorizontalLayout { spacing: 10px; alignment: start;
+                        Text { text: "Resolution"; vertical-alignment: center; width: 110px; }
+                        ComboBox {
+                            width: 240px;
+                            model: c.modes;
+                            current-index: c.mode-index;
+                            selected => { DisplaysData.set-mode(i, self.current-index); }
+                        }
+                        Text { text: c.scale; vertical-alignment: center; color: Palette.foreground.with-alpha(0.7); }
+                    }
+                    HorizontalLayout { spacing: 10px;
+                        Switch {
+                            text: "Integer scaling";
+                            width: 170px;
+                            checked: c.int-on;
+                            enabled: c.int-ok;
+                            toggled => { DisplaysData.integer(i, self.checked); }
+                        }
+                        Text { text: c.int-note; font-size: 12px; color: Palette.foreground.with-alpha(0.7); wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                    }
+                }
+            }
+        }
+    }
+}

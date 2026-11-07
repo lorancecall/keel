@@ -1,0 +1,106 @@
+// The tray panel (left click on the tray icon): free memory, the eGPU, where internet goes, and
+// integer scaling per display, with a button into the main window. A small borderless window that
+// closes when another window takes the focus. Data from src/flyout.rs.
+import { Button, Switch, Palette } from "std-widgets.slint";
+import { DisplayCard } from "displays.slint";
+
+global Tone {
+    out property <color> ok: Palette.color-scheme == ColorScheme.dark ? #4cc38a : #0e7c3a;
+    out property <color> wait: Palette.color-scheme == ColorScheme.dark ? #f2b05a : #b45309;
+    out property <color> bad: Palette.color-scheme == ColorScheme.dark ? #ff6b6b : #c42b1c;
+    out property <color> accent: Palette.color-scheme == ColorScheme.dark ? #4ca6e8 : #0f6cbd;
+    out property <color> muted: Palette.foreground.with-alpha(0.6);
+}
+
+component Label inherits Text {
+    font-size: 11px;
+    font-weight: 700;
+    color: Tone.muted;
+}
+
+component Block inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <string> sub;
+    in property <color> tone: Palette.foreground;
+    spacing: 1px;
+    Label { text: label; }
+    Text { text: value; font-size: 15px; font-weight: 600; color: tone; overflow: elide; }
+    if sub != "" : Text { text: sub; font-size: 11px; color: Tone.muted; overflow: elide; }
+}
+
+export component Flyout inherits Window {
+    title: "Keel panel";
+    no-frame: true;
+    always-on-top: true;
+    width: 330px;
+    background: Palette.background;
+    in property <int> force-scheme;
+    changed force-scheme => {
+        if (root.force-scheme == 1) { Palette.color-scheme = ColorScheme.dark; }
+        if (root.force-scheme == 2) { Palette.color-scheme = ColorScheme.light; }
+    }
+    in property <string> mem-free;
+    in property <string> mem-sub;
+    in property <float> mem-frac;
+    in property <string> egpu-value;
+    in property <string> egpu-sub;
+    in property <bool> egpu-on;
+    in property <string> net-value;
+    in property <string> net-sub;
+    in property <int> net-state;          // 0 as set, 1 applying, 2 check
+    in property <[DisplayCard]> displays;
+    in property <string> result;
+    callback open(string);
+    callback integer(int, bool);
+    callback dismiss();
+
+    FocusScope {
+        key-pressed(e) => { if (e.text == Key.Escape) { root.dismiss(); return accept; } reject }
+        Rectangle {
+            border-width: 1px;
+            border-color: Palette.border;
+            VerticalLayout {
+                padding: 14px;
+                spacing: 12px;
+                HorizontalLayout { spacing: 8px;
+                    Image { source: @image-url("../../../assets/keel-boat.png"); colorize: Palette.foreground; width: 22px; height: 22px; }
+                    Text { text: "Keel"; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: "Open Keel"; clicked => { root.open(""); } }
+                }
+
+                VerticalLayout { spacing: 4px;
+                    Block { label: "MEMORY"; value: root.mem-free; sub: root.mem-sub;
+                            tone: root.mem-frac >= 0.9 ? Tone.bad : Palette.foreground; }
+                    Rectangle { height: 5px; border-radius: 3px; background: Palette.foreground.with-alpha(0.1);
+                        Rectangle { x: 0; height: 5px; border-radius: 3px; width: parent.width * max(0.0, min(1.0, root.mem-frac));
+                                    background: root.mem-frac >= 0.9 ? Tone.bad : Tone.accent; }
+                    }
+                }
+                Block { label: "eGPU"; value: root.egpu-value; sub: root.egpu-sub; tone: root.egpu-on ? Palette.foreground : Tone.muted; }
+                Block { label: "NETWORK"; value: root.net-value; sub: root.net-sub;
+                        tone: root.net-state == 2 ? Tone.bad : Palette.foreground; }
+
+                if root.displays.length > 0 : VerticalLayout { spacing: 6px;
+                    Label { text: "INTEGER SCALING"; }
+                    for d[i] in root.displays : HorizontalLayout { spacing: 8px;
+                        VerticalLayout { horizontal-stretch: 1;
+                            Text { text: d.name; font-weight: 600; overflow: elide; }
+                            Text { text: d.int-note; font-size: 11px; color: Tone.muted; overflow: elide; }
+                        }
+                        Switch { checked: d.int-on; enabled: d.int-ok; toggled => { root.integer(i, self.checked); } }
+                    }
+                }
+
+                if root.result != "" : Text { text: root.result; font-size: 11px; color: Tone.muted; wrap: word-wrap; }
+
+                HorizontalLayout { spacing: 6px;
+                    Button { text: "Displays"; clicked => { root.open("displays"); } }
+                    Button { text: "Memory"; clicked => { root.open("memory-history"); } }
+                    Button { text: "Network"; clicked => { root.open("network"); } }
+                }
+            }
+        }
+    }
+}

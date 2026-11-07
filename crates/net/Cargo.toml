@@ -1,0 +1,15 @@
+[package]
+name = "keel-net"
+version.workspace = true
+edition.workspace = true
+description = "Keel network feature: Wi-Fi beside the LAN, internet side, VPN pinning, kill switches"
+
+[dependencies]
+keel-core.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+winreg.workspace = true
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_NetworkManagement_WindowsFirewall", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant"] }

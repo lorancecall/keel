@@ -1,0 +1,376 @@
+// Keel main window. Compiled by build.rs (slint-build); see src/main.rs for the logic.
+import { Button, CheckBox, ComboBox, LineEdit, Switch, StandardTableView, TextEdit, ScrollView, GroupBox,
+         VerticalBox, HorizontalBox, Palette } from "std-widgets.slint";
+import { SideMenu, Pages } from "nav.slint";
+import { EgpuPage, EgpuData } from "egpu.slint";
+import { HomePage, HomeData } from "home.slint";
+import { MemHistoryPage, MemHistData } from "memhistory.slint";
+import { DisplaysPage, DisplaysData } from "displays.slint";
+import { LocalAiPage, LocalAiData } from "localai.slint";
+import { Flyout } from "flyout.slint";
+import { GamesPage, GamesData } from "games.slint";
+export { Pages, EgpuData, HomeData, MemHistData, DisplaysData, LocalAiData, Flyout, GamesData }
+
+export struct Fav { id: string, label: string, desc: string, on: bool, group: string }
+export struct Swatch { hex: string, color: color }
+export struct VpnRow { name: string, kind: string, via: int, kill: bool, exe: string }
+export struct Feat { name: string, label: string, on: bool, state: string }
+
+component Card inherits Rectangle {
+    border-radius: 8px;
+    background: Palette.alternate-background;
+    @children
+}
+
+export component MainWindow inherits Window {
+    title: "Keel";
+    preferred-width: 980px;
+    preferred-height: 720px;
+    in property <string> memory-line;
+    in property <string> status;
+    in property <bool> busy;
+    in-out property <int> page;
+    // Settings > Side menu: 0 icon and text, 1 icons only, 2 text only.
+    in-out property <int> side-menu;
+    callback side-menu-changed(int);
+    // KEEL_THEME=dark|light (screenshots and checks only): 0 follows Windows.
+    in property <int> force-scheme;
+    changed force-scheme => {
+        if (root.force-scheme == 1) { Palette.color-scheme = ColorScheme.dark; }
+        if (root.force-scheme == 2) { Palette.color-scheme = ColorScheme.light; }
+    }
+    // memory
+    in property <[[StandardListViewItem]]> top-families;
+    in property <[[StandardListViewItem]]> families;
+    in property <[[StandardListViewItem]]> managed;
+    in property <string> details;
+    in property <string> app-hint;
+    in-out property <string> app-exe;
+    // Apps page: the selected family is switched off in AI mode (Local AI page).
+    in-out property <bool> fam-ai;
+    callback fam-ai-toggled(bool);
+    in-out property <int> fam-row: -1;
+    in-out property <int> managed-row: -1;
+    // overview
+    in property <string> egpu-line;
+    in property <string> net-line;
+    in property <string> service-line;
+    // egpu
+    // network
+    in property <string> net-summary;
+    in property <string> net-detail;
+    in-out property <int> net-internet;
+    in-out property <bool> net-enabled;
+    in-out property <bool> net-keep-wifi;
+    in property <[VpnRow]> vpn-list;
+    in-out property <bool> add-open;
+    in-out property <bool> net-dirty;
+    in-out property <string> new-name;
+    in-out property <int> new-kind;
+    in-out property <string> new-exe;
+    in-out property <string> new-adapter;
+    in-out property <string> new-servers;
+    in-out property <int> new-via;
+    in-out property <bool> new-kill;
+    // settings
+    in property <[Feat]> features;
+    in property <[Fav]> favorites;
+    // App icon (Settings > Appearance)
+    in property <[Swatch]> icon-colors;
+    in-out property <string> icon-color;
+    in-out property <int> icon-style;
+    in-out property <bool> tray-icon-color;
+    in property <image> icon-preview;
+    callback icon-changed();
+    // About
+    in property <string> app-version;
+    in property <string> service-version;
+    in property <string> about-paths;
+    callback open-folder(int);   // 0 program, 1 user data, 2 service data
+
+    callback refresh();
+    callback family-selected(int);
+    // Column header click: table (0 overview, 1 families, 2 on-demand), column, ascending.
+    callback sort-table(int, int, bool);
+    callback set-mode(string);
+    callback turn(bool);
+    callback release();
+    // Memory history loads on first visit (and from its range picker).
+    in-out property <bool> history-loaded;
+    callback vpn-set(int, int, bool);   // row, via (0 Wi-Fi, 1 LAN), kill switch
+    callback vpn-remove-at(int);
+    callback vpn-add();
+    callback net-save();
+    callback net-reapply();
+    callback feature-toggled(string, bool);
+    callback fav-toggled(int, bool);
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        SideMenu {
+            mode: root.side-menu;
+            page: root.page;
+            // Local AI runs on the eGPU: without one it only takes system memory.
+            local-ai-on: EgpuData.attached;
+            picked(p) => { root.page = p; if (p == Pages.memory-history && !root.history-loaded) { MemHistData.reload(); } if (p == Pages.displays) { DisplaysData.refresh(); } if (p == Pages.external-gpu) { EgpuData.amd-load(); EgpuData.nv3d-load(); } if (p == Pages.local-ai) { LocalAiData.refresh(); } if (p == Pages.games) { GamesData.refresh(); } }
+        }
+        VerticalLayout {
+            spacing: 8px;
+            // The header keeps its height; the page below takes the rest (with a fluid header the
+            // free height went to it on large windows and the page sat halfway down, empty-looking).
+            HorizontalLayout {
+                spacing: 8px;
+                vertical-stretch: 0;
+                // Memory pages only (Apps, On-demand apps, Memory history); Home has its own card.
+                Text { text: root.page >= Pages.apps && root.page <= Pages.memory-history ? root.memory-line : ""; font-size: 15px; font-weight: 600; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: root.busy ? "Working..." : root.status; vertical-alignment: center; color: Palette.foreground.with-alpha(0.6); overflow: elide; max-width: 420px; }
+                Button { text: "Refresh"; enabled: !root.busy; clicked => { root.refresh(); } }
+            }
+
+            if root.page == Pages.home : HomePage {
+                vertical-stretch: 1;
+                go(p) => { root.page = p; if (p == Pages.memory-history && !root.history-loaded) { MemHistData.reload(); } if (p == Pages.displays) { DisplaysData.refresh(); } if (p == Pages.external-gpu) { EgpuData.amd-load(); EgpuData.nv3d-load(); } if (p == Pages.local-ai) { LocalAiData.refresh(); } if (p == Pages.games) { GamesData.refresh(); } }
+            }
+
+            if root.page == 1 : HorizontalLayout {
+                spacing: 8px;
+                StandardTableView {
+                    horizontal-stretch: 0;
+                    min-width: 640px;
+                    // Headers need room for the sort arrow.
+                    columns: [{ title: "Family", width: 230px }, { title: "Procs", width: 84px }, { title: "MB", width: 76px },
+                              { title: "Auto", width: 80px }, { title: "Svc", width: 76px }, { title: "Tasks", width: 84px }];
+                    rows: root.families;
+                    // Bound so Memory history's "Show in Apps" can pick the row.
+                    current-row <=> root.fam-row;
+                    current-row-changed(r) => { root.fam-row = r; root.family-selected(r); }
+                    sort-ascending(c) => { root.sort-table(1, c, true); }
+                    sort-descending(c) => { root.sort-table(1, c, false); }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 8px;
+                    GroupBox {
+                        title: "Switch this family";
+                        vertical-stretch: 0;
+                        VerticalLayout { spacing: 8px; alignment: start;
+                            Text { text: "Keep off: services, tasks and startup items off.\nFollow app: on only while the app below runs."; wrap: word-wrap; }
+                            LineEdit { placeholder-text: root.app-hint == "" ? "app exe, e.g. OneDrive.exe" : root.app-hint; text <=> root.app-exe; }
+                            HorizontalLayout { spacing: 8px; alignment: start;
+                                Button { text: "Keep off"; enabled: !root.busy && root.fam-row >= 0; clicked => { root.set-mode("off"); } }
+                                Button { text: "Follow app"; enabled: !root.busy && root.fam-row >= 0; clicked => { root.set-mode("follow"); } }
+                                Button { text: "Back to normal"; enabled: !root.busy && root.fam-row >= 0; clicked => { root.set-mode("normal"); } }
+                            }
+                        }
+                    }
+                    GroupBox {
+                        title: "AI mode";
+                        vertical-stretch: 0;
+                        VerticalLayout { spacing: 6px; alignment: start;
+                            CheckBox { text: "Switch off while a local AI model is loaded"; enabled: root.fam-row >= 0; checked <=> root.fam-ai; toggled => { root.fam-ai-toggled(self.checked); } }
+                            Text { text: "Its services, tasks and running processes stop; they come back when the model unloads. Turn AI mode on under Local AI."; wrap: word-wrap; font-size: 12px; opacity: 0.7; }
+                        }
+                    }
+                    TextEdit { text: root.details == "" ? "Select a family to see what it installed." : root.details; read-only: true; vertical-stretch: 1; font-size: 12px; }
+                }
+            }
+
+            if root.page == 2 : VerticalLayout {
+                spacing: 8px;
+                Text { text: "Families Keel keeps off. Follow: on while their app runs."; }
+                StandardTableView {
+                    columns: [{ title: "Family", width: 260px }, { title: "Mode", width: 90px }, { title: "Now", width: 70px },
+                              { title: "Apps", width: 240px }, { title: "Services", width: 90px }, { title: "Tasks", width: 70px }];
+                    rows: root.managed;
+                    current-row-changed(r) => { root.managed-row = r; }
+                    sort-ascending(c) => { root.sort-table(2, c, true); }
+                    sort-descending(c) => { root.sort-table(2, c, false); }
+                }
+                HorizontalLayout { spacing: 8px; alignment: start;
+                    Button { text: "Switch on"; enabled: !root.busy && root.managed-row >= 0; clicked => { root.turn(true); } }
+                    Button { text: "Switch off"; enabled: !root.busy && root.managed-row >= 0; clicked => { root.turn(false); } }
+                    Button { text: "Back to normal"; enabled: !root.busy && root.managed-row >= 0; clicked => { root.release(); } }
+                }
+            }
+
+            if root.page == Pages.memory-history : MemHistoryPage { vertical-stretch: 1; }
+
+            if root.page == Pages.external-gpu : EgpuPage { vertical-stretch: 1; }
+
+            if root.page == Pages.network : ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    Text { text: "Network"; font-size: 24px; font-weight: 600; }
+
+                    // Now: where traffic goes (the same values as the Home widget).
+                    Card {
+                        VerticalLayout { padding: 14px; spacing: 6px;
+                            Text { text: "NOW"; font-size: 11px; font-weight: 700; color: Palette.foreground.with-alpha(0.6); }
+                            Text { text: HomeData.net-summary; font-size: 20px; font-weight: 600; }
+                            if HomeData.net-sub != "" : Text { text: HomeData.net-sub; color: Palette.foreground.with-alpha(0.7); wrap: word-wrap; }
+                            for l in HomeData.net-lines : HorizontalLayout { spacing: 8px;
+                                Text { text: l.label; width: 220px; color: Palette.foreground.with-alpha(0.75); }
+                                Text { text: l.text; font-weight: 600; color: l.warn ? #c42b1c : Palette.foreground; }
+                            }
+                            Text { text: HomeData.net-note; wrap: word-wrap; color: HomeData.net-warn ? #c42b1c : Palette.foreground.with-alpha(0.7); }
+                        }
+                    }
+
+                    // Settings, each with what it does.
+                    Card {
+                        VerticalLayout { padding: 14px; spacing: 10px;
+                            Text { text: "ROUTING"; font-size: 11px; font-weight: 700; color: Palette.foreground.with-alpha(0.6); }
+                            HorizontalLayout { spacing: 12px;
+                                Switch { text: "Routing"; checked <=> root.net-enabled; width: 230px; toggled => { root.net-dirty = true; } }
+                                Text { text: "Off: Windows default."; wrap: word-wrap; vertical-alignment: center; color: Palette.foreground.with-alpha(0.65); }
+                            }
+                            HorizontalLayout { spacing: 12px;
+                                HorizontalLayout { width: 230px; spacing: 8px;
+                                    Text { text: "Internet over"; vertical-alignment: center; }
+                                    ComboBox { model: ["Wi-Fi", "LAN"]; current-index <=> root.net-internet; width: 110px; selected => { root.net-dirty = true; } }
+                                }
+                                Text { text: "For non-VPN traffic. Falls back to the other when disconnected."; wrap: word-wrap; vertical-alignment: center; color: Palette.foreground.with-alpha(0.65); }
+                            }
+                            HorizontalLayout { spacing: 12px;
+                                Switch { text: "Keep Wi-Fi with LAN"; checked <=> root.net-keep-wifi; width: 230px; toggled => { root.net-dirty = true; } }
+                                Text { text: "Wi-Fi stays on when a cable is plugged in."; wrap: word-wrap; vertical-alignment: center; color: Palette.foreground.with-alpha(0.65); }
+                            }
+                        }
+                    }
+
+                    // VPNs: each row edits in place.
+                    Card {
+                        VerticalLayout { padding: 14px; spacing: 8px;
+                            Text { text: "VPNS"; font-size: 11px; font-weight: 700; color: Palette.foreground.with-alpha(0.6); }
+                            Text { text: "Kill switch: the VPN app can use only its own connection. Tailscale can be kept on Wi-Fi (net.toml: tailscale_wifi_only)."; wrap: word-wrap; font-size: 12px; color: Palette.foreground.with-alpha(0.65); }
+                            if root.vpn-list.length == 0 : Text { text: "No VPN set up."; color: Palette.foreground.with-alpha(0.65); }
+                            for v[i] in root.vpn-list : HorizontalLayout { spacing: 10px;
+                                VerticalLayout { horizontal-stretch: 1;
+                                    Text { text: v.name; font-weight: 600; }
+                                    Text { text: v.exe; font-size: 11px; color: Palette.foreground.with-alpha(0.6); overflow: elide; }
+                                }
+                                Text { text: "over"; vertical-alignment: center; }
+                                ComboBox { model: ["Wi-Fi", "LAN"]; current-index: v.via; width: 100px; selected => { root.vpn-set(i, self.current-index, v.kill); } }
+                                CheckBox { text: "Kill switch"; checked: v.kill; toggled => { root.vpn-set(i, v.via, self.checked); } }
+                                Button { text: "Remove"; clicked => { root.vpn-remove-at(i); } }
+                            }
+                            if !root.add-open : HorizontalLayout { alignment: start;
+                                Button { text: "+ Add VPN"; clicked => { root.add-open = true; } }
+                            }
+                            if root.add-open : VerticalLayout { spacing: 6px;
+                                Rectangle { height: 1px; background: Palette.border; }
+                                Text { text: "New VPN"; font-weight: 600; }
+                                HorizontalLayout { spacing: 8px;
+                                    LineEdit { placeholder-text: "Name (e.g. NordVPN)"; text <=> root.new-name; }
+                                    ComboBox { model: ["Default route", "Server list"]; current-index <=> root.new-kind; width: 200px; }
+                                    ComboBox { model: ["Wi-Fi", "LAN"]; current-index <=> root.new-via; width: 100px; }
+                                    CheckBox { text: "Kill switch"; checked <=> root.new-kill; }
+                                }
+                                HorizontalLayout { spacing: 8px;
+                                    LineEdit { placeholder-text: "Program (C:\\Program Files\\...\\vpn.exe)"; text <=> root.new-exe; }
+                                    LineEdit { placeholder-text: "Tunnel adapter (e.g. NordLynx*)"; text <=> root.new-adapter; width: 200px; }
+                                    LineEdit { placeholder-text: "Servers (a.b.c.d, ...)"; text <=> root.new-servers; width: 180px; enabled: root.new-kind == 1; }
+                                }
+                                HorizontalLayout { spacing: 8px; alignment: start;
+                                    Button { text: "Add"; primary: true; clicked => { root.vpn-add(); root.net-dirty = true; } }
+                                    Button { text: "Cancel"; clicked => { root.add-open = false; } }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout { spacing: 8px; alignment: start;
+                        Button { text: "Save and apply"; primary: true; enabled: !root.busy; clicked => { root.net-save(); root.net-dirty = false; } }
+                        Button { text: "Re-apply"; enabled: !root.busy; clicked => { root.net-reapply(); } }
+                        Text { text: root.net-dirty ? "Unsaved changes" : ""; vertical-alignment: center; color: #b45309; }
+                    }
+                }
+            }
+
+            if root.page == Pages.displays : DisplaysPage { vertical-stretch: 1; }
+
+            if root.page == Pages.local-ai : LocalAiPage { vertical-stretch: 1; }
+
+            if root.page == Pages.games : GamesPage { vertical-stretch: 1; }
+
+            if root.page == Pages.settings : ScrollView {
+                VerticalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Text { text: "Appearance"; font-size: 16px; font-weight: 600; }
+                    HorizontalLayout { spacing: 12px; alignment: start;
+                        Text { text: "Side menu"; vertical-alignment: center; width: 220px; }
+                        ComboBox {
+                            width: 180px;
+                            model: ["Icons and text", "Icons only", "Text only"];
+                            current-index <=> root.side-menu;
+                            selected => { root.side-menu-changed(self.current-index); }
+                        }
+                    }
+                    HorizontalLayout { spacing: 12px; alignment: start;
+                        Text { text: "App icon"; vertical-alignment: center; width: 220px; }
+                        Image { source: root.icon-preview; width: 32px; height: 32px; }
+                        for c in root.icon-colors : Rectangle {
+                            width: 24px; height: 24px; y: 4px; border-radius: 12px;
+                            background: c.color;
+                            border-width: c.hex == root.icon-color ? 3px : 1px;
+                            border-color: c.hex == root.icon-color ? Palette.foreground : Palette.border;
+                            TouchArea { clicked => { root.icon-color = c.hex; root.icon-changed(); } }
+                        }
+                        LineEdit { width: 100px; placeholder-text: "#rrggbb"; text <=> root.icon-color; accepted => { root.icon-changed(); } }
+                    }
+                    HorizontalLayout { spacing: 12px; alignment: start;
+                        Text { text: "Icon style"; vertical-alignment: center; width: 220px; }
+                        ComboBox { width: 180px; model: ["Filled", "Boat only"]; current-index <=> root.icon-style; selected => { root.icon-changed(); } }
+                        CheckBox { text: "Tray icon in this colour"; checked <=> root.tray-icon-color; toggled => { root.icon-changed(); } }
+                    }
+                    Text { text: "About"; font-size: 16px; font-weight: 600; }
+                    HorizontalLayout { spacing: 12px; alignment: start;
+                        Image { source: @image-url("../../../assets/keel-boat.png"); colorize: Palette.foreground; width: 40px; height: 40px; }
+                        VerticalLayout { spacing: 2px;
+                            Text { text: "Keel " + root.app-version; font-size: 15px; font-weight: 600; }
+                            Text { text: root.service-version; color: Palette.foreground.with-alpha(0.65); }
+                            Text { text: "Memory, eGPU and network for the Legion Go · github.com/lorancecall/keel"; color: Palette.foreground.with-alpha(0.65); }
+                        }
+                    }
+                    Text { text: root.about-paths; font-size: 12px; color: Palette.foreground.with-alpha(0.65); wrap: word-wrap; }
+                    HorizontalLayout { spacing: 8px; alignment: start;
+                        Button { text: "Program folder"; clicked => { root.open-folder(0); } }
+                        Button { text: "My data and logs"; clicked => { root.open-folder(1); } }
+                        Button { text: "Service data and log"; clicked => { root.open-folder(2); } }
+                    }
+                    Text { text: "Memory history"; font-size: 16px; font-weight: 600; }
+                    HorizontalLayout { spacing: 12px;
+                        Switch { text: "Keep a week of history"; checked <=> MemHistData.keep; width: 220px; toggled => { MemHistData.keep-changed(); } }
+                        Text {
+                            text: "Off: this session and the previous one only.";
+                            vertical-alignment: center; wrap: word-wrap; color: Palette.foreground.with-alpha(0.65);
+                        }
+                    }
+                    Text { text: "Service"; font-size: 16px; font-weight: 600; }
+                    for f in root.features : HorizontalLayout { spacing: 12px;
+                        Switch { text: f.label; checked: f.on; width: 220px; toggled => { root.feature-toggled(f.name, self.checked); } }
+                        Text { text: f.state; vertical-alignment: center; color: Palette.foreground.with-alpha(0.65); }
+                    }
+                    Text { text: "Tray menu"; font-size: 16px; font-weight: 600; }
+                    Text { text: "Open Keel and Quit are always shown."; color: Palette.foreground.with-alpha(0.65); }
+                    for f[i] in root.favorites : VerticalLayout {
+                        spacing: 4px;
+                        if i == 0 || root.favorites[i - 1].group != f.group : Text {
+                            text: f.group; font-size: 12px; font-weight: 600; color: Palette.foreground.with-alpha(0.65);
+                            height: 26px; vertical-alignment: bottom;
+                        }
+                        HorizontalLayout { spacing: 12px;
+                            CheckBox { text: f.label; checked: f.on; width: 220px; toggled => { root.fav-toggled(i, self.checked); } }
+                            Text { text: f.desc; vertical-alignment: center; color: Palette.foreground.with-alpha(0.65); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

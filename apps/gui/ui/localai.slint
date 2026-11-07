@@ -1,0 +1,164 @@
+// Local AI: eGPU memory (room for a model), the installed models and whether each fits, and what
+// runs now with the memory it takes. Data from src/localai.rs via LocalAiData.
+import { Button, CheckBox, ScrollView, Switch, Palette, StandardTableView } from "std-widgets.slint";
+
+// state: 0 fits / all in GPU memory, 1 spills into system memory, 2 too big / no eGPU
+export struct AiModel { name: string, info: string, size: string, state: int, text: string, gpu-frac: float }
+export struct AiProc { name: string, memory: string, egpu: string, other-gpu: string }
+
+export global LocalAiData {
+    // 1. room on the eGPU
+    in property <string> egpu-name;
+    in property <string> vram-text;
+    in property <float> vram-frac;
+    in property <string> vram-users;
+    // 2. installed models
+    in property <[AiModel]> installed;
+    in property <string> installed-note;
+    // 3. running now
+    in property <string> running-text;
+    in property <[AiProc]> procs;
+    in property <[AiModel]> loaded;
+    in property <bool> ollama-running;
+    in property <string> result;
+    // AI mode: chosen on-demand apps are switched off while a model is loaded (the tray does it).
+    in-out property <bool> ai-mode;
+    in property <string> ai-apps;   // names picked on the Apps page ("" = none)
+    // One row per picked app: App, Now, Note (like the On-demand apps table).
+    in property <[[StandardListViewItem]]> ai-rows;
+    callback ai-mode-changed();
+    callback refresh();
+    callback unload(string);
+    callback stop-ollama();
+}
+
+global Tone {
+    out property <color> ok: Palette.color-scheme == ColorScheme.dark ? #4cc38a : #0e7c3a;
+    out property <color> spill: Palette.color-scheme == ColorScheme.dark ? #f2b05a : #b45309;
+    out property <color> bad: Palette.color-scheme == ColorScheme.dark ? #ff6b6b : #c42b1c;
+    out property <color> gpu: Palette.color-scheme == ColorScheme.dark ? #4ca6e8 : #0f6cbd;
+    out property <color> muted: Palette.foreground.with-alpha(0.6);
+}
+
+component Card inherits Rectangle {
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Palette.border;
+    background: Palette.control-background;
+    @children
+}
+
+component Title inherits Text {
+    font-size: 14px;
+    font-weight: 700;
+}
+
+component Dot inherits Rectangle {
+    in property <int> state;
+    width: 10px; height: 10px; border-radius: 5px;
+    background: state == 0 ? Tone.ok : (state == 1 ? Tone.spill : Tone.bad);
+}
+
+export component LocalAiPage inherits VerticalLayout {
+    spacing: 10px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        vertical-stretch: 0;
+        Text { text: "Local AI"; font-size: 24px; font-weight: 600; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        Text { text: LocalAiData.result; color: Tone.muted; vertical-alignment: center; overflow: elide; max-width: 420px; }
+    }
+
+    ScrollView {
+        vertical-stretch: 1;
+        VerticalLayout {
+            spacing: 12px;
+            alignment: start;
+
+            // 1. Room on the eGPU.
+            Card {
+                VerticalLayout { padding: 16px; spacing: 8px;
+                    HorizontalLayout { spacing: 8px;
+                        Title { text: "eGPU memory"; }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: LocalAiData.egpu-name; color: Tone.muted; vertical-alignment: center; }
+                    }
+                    Text { text: LocalAiData.vram-text; font-size: 22px; font-weight: 600; }
+                    if LocalAiData.egpu-name != "" : Rectangle {
+                        height: 10px; border-radius: 5px; background: Tone.ok.with-alpha(0.25);
+                        Rectangle { x: 0; height: 10px; border-radius: 5px; width: parent.width * max(0.0, min(1.0, LocalAiData.vram-frac)); background: Tone.gpu; }
+                    }
+                    Text { text: LocalAiData.vram-users; font-size: 12px; color: Tone.muted; wrap: word-wrap; }
+                }
+            }
+
+            // 2. Which installed models fit.
+            Card {
+                VerticalLayout { padding: 16px; spacing: 8px;
+                    Title { text: "Models"; }
+                    for m in LocalAiData.installed : HorizontalLayout { spacing: 10px;
+                        VerticalLayout { alignment: center; Dot { state: m.state; } }
+                        VerticalLayout { width: 230px;
+                            Text { text: m.name; font-weight: 600; overflow: elide; }
+                            Text { text: m.size + " · " + m.info; font-size: 11px; color: Tone.muted; }
+                        }
+                        Text { text: m.text; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1;
+                               color: m.state == 0 ? Tone.ok : (m.state == 1 ? Tone.spill : Tone.bad); }
+                    }
+                    Text { text: LocalAiData.installed-note; font-size: 11px; color: Tone.muted; wrap: word-wrap; }
+                }
+            }
+
+            // 3. What runs now.
+            Card {
+                VerticalLayout { padding: 16px; spacing: 8px;
+                    Title { text: "Running"; }
+                    HorizontalLayout { spacing: 8px;
+                        Text { text: LocalAiData.running-text; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
+                        if LocalAiData.ollama-running : Button { text: "End Ollama"; clicked => { LocalAiData.stop-ollama(); } }
+                    }
+                    for p in LocalAiData.procs : HorizontalLayout { spacing: 10px;
+                        Text { text: p.name; font-weight: 600; width: 230px; }
+                        Text { text: "RAM " + p.memory; width: 120px; }
+                        Text { text: "on the eGPU " + p.egpu; color: Tone.muted; }
+                    }
+                    for m in LocalAiData.loaded : HorizontalLayout { spacing: 10px;
+                        VerticalLayout { width: 230px;
+                            Text { text: m.name; font-weight: 600; overflow: elide; }
+                            Text { text: m.info; font-size: 11px; color: Tone.muted; overflow: elide; }
+                        }
+                        VerticalLayout { horizontal-stretch: 1; spacing: 3px; alignment: center;
+                            Rectangle { height: 8px; border-radius: 4px; background: Tone.spill.with-alpha(m.gpu-frac < 1 ? 0.8 : 0.15);
+                                Rectangle { x: 0; height: 8px; border-radius: 4px; width: parent.width * max(0.0, min(1.0, m.gpu-frac)); background: Tone.gpu; }
+                            }
+                            Text { text: m.text; font-size: 11px; wrap: word-wrap; color: m.state == 0 ? Tone.muted : Tone.spill; }
+                        }
+                        Button { text: "Unload"; clicked => { LocalAiData.unload(m.name); } }
+                    }
+                    if LocalAiData.loaded.length > 0 : Text {
+                        text: "Blue: GPU memory. Orange: system memory (slower, uses RAM).";
+                        font-size: 11px; color: Tone.muted; wrap: word-wrap;
+                    }
+                }
+            }
+            Card {
+                VerticalLayout { padding: 16px; spacing: 8px;
+                    HorizontalLayout { spacing: 8px;
+                        Title { text: "AI mode"; }
+                        Rectangle { horizontal-stretch: 1; }
+                        Switch { checked <=> LocalAiData.ai-mode; toggled => { LocalAiData.ai-mode-changed(); } }
+                    }
+                    Text { text: "While a model is loaded, these apps are switched off; they come back when it unloads."; font-size: 12px; color: Tone.muted; wrap: word-wrap; }
+                    if LocalAiData.ai-apps == "" : Text { text: "No apps yet: pick them on the Apps page (AI mode box)."; wrap: word-wrap; }
+                    if LocalAiData.ai-apps != "" : StandardTableView {
+                        height: 44px + LocalAiData.ai-rows.length * 34px;
+                        columns: [{ title: "App", width: 260px }, { title: "Now", width: 90px }, { title: "Note", horizontal-stretch: 1 }];
+                        rows: LocalAiData.ai-rows;
+                    }
+                    if LocalAiData.ai-apps != "" : Text { text: "Change the list on the Apps page."; font-size: 12px; color: Tone.muted; }
+                }
+            }
+        }
+    }
+}

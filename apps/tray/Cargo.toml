@@ -1,0 +1,27 @@
+[package]
+name = "keel-tray"
+version.workspace = true
+edition.workspace = true
+description = "Keel tray: favorites menu, eGPU display work, memory observer"
+
+[[bin]]
+name = "keel-tray"
+path = "src/main.rs"
+
+[dependencies]
+keel-core.workspace = true
+keel-ram.workspace = true
+keel-egpu.workspace = true
+keel-net.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+winreg.workspace = true
+rfd = "0.17.2"
+tauri-winrt-notification = "0.8.1"
+tray-icon = "0.26.1"
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_Accessibility"] }
+
+[build-dependencies]
+keel-core = { workspace = true, features = ["build"] }

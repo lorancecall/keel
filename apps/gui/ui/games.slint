@@ -1,0 +1,188 @@
+// GPU apps (side menu; page id "games"): the game running now, the installed games found by a scan (each with an eGPU switch),
+// other programs set to the eGPU (folded), and what counts as a game (folders, program names).
+// Data from src/games.rs via GamesData.
+import { Button, ScrollView, Switch, Palette } from "std-widgets.slint";
+
+export struct GameApp { name: string, path: string }
+export struct GameRow { name: string, path: string, source: string, egpu: bool }
+
+export global GamesData {
+    in property <bool> has-game;
+    in property <string> now-name;
+    in property <string> now-path;
+    in property <bool> now-on-egpu;
+    in property <[GameRow]> installed;
+    in property <string> scan-note;
+    in property <bool> scanning;
+    in property <[GameApp]> on-egpu;
+    in-out property <bool> show-others;
+    in-out property <bool> show-games: true;
+    in-out property <bool> show-folders;
+    in-out property <bool> show-programs;
+    in property <[GameApp]> folders;
+    in property <[string]> programs;
+    in property <string> result;
+    callback refresh();
+    callback scan();
+    callback set-egpu(int, bool);
+    callback run-now-on-egpu();
+    callback egpu-remove(int);
+    callback folder-add();
+    callback folder-remove(int);
+    callback program-add();
+    callback program-remove(int);
+}
+
+global Tone {
+    out property <color> ok: Palette.color-scheme == ColorScheme.dark ? #4cc38a : #0e7c3a;
+    out property <color> muted: Palette.foreground.with-alpha(0.6);
+    out property <color> line: Palette.foreground.with-alpha(0.1);
+}
+
+component Card inherits Rectangle {
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Palette.border;
+    background: Palette.control-background;
+    @children
+}
+
+component Title inherits Text {
+    font-size: 14px;
+    font-weight: 700;
+    vertical-alignment: center;
+}
+
+component Tag inherits Rectangle {
+    in property <string> text;
+    height: 18px;
+    width: t.preferred-width + 12px;
+    border-radius: 9px;
+    background: Palette.foreground.with-alpha(0.08);
+    t := Text { text: root.text; font-size: 10px; font-weight: 600; color: Tone.muted; }
+}
+
+// One row: a line above it (except the first), name and a small second line, a control at the right.
+component Row inherits VerticalLayout {
+    in property <bool> first;
+    in property <string> text;
+    in property <string> sub;
+    in property <string> tag;
+    spacing: 6px;
+    if !root.first : Rectangle { height: 1px; background: Tone.line; }
+    HorizontalLayout { spacing: 8px; min-height: 30px;
+        VerticalLayout { horizontal-stretch: 1; alignment: center;
+            HorizontalLayout { spacing: 6px; alignment: start;
+                Text { text: root.text; font-weight: 600; overflow: elide; vertical-alignment: center; }
+                if root.tag != "" : VerticalLayout { alignment: center; Tag { text: root.tag; } }
+            }
+            if root.sub != "" : Text { text: root.sub; font-size: 11px; color: Tone.muted; overflow: elide; }
+        }
+        @children
+    }
+}
+
+export component GamesPage inherits VerticalLayout {
+    spacing: 10px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        vertical-stretch: 0;
+        Text { text: "GPU apps"; font-size: 24px; font-weight: 600; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        Text { text: GamesData.result; color: Tone.muted; vertical-alignment: center; overflow: elide; max-width: 460px; }
+    }
+
+    ScrollView {
+        vertical-stretch: 1;
+        VerticalLayout {
+            spacing: 12px;
+            alignment: start;
+
+            Card {
+                VerticalLayout { padding: 16px; spacing: 6px;
+                    Title { text: "Now"; }
+                    if !GamesData.has-game : Text { text: "No game running"; color: Tone.muted; }
+                    if GamesData.has-game : HorizontalLayout { spacing: 8px;
+                        VerticalLayout { horizontal-stretch: 1;
+                            Text { text: GamesData.now-name; font-size: 18px; font-weight: 600; overflow: elide; }
+                            Text { text: GamesData.now-path; font-size: 11px; color: Tone.muted; overflow: elide; }
+                        }
+                        if GamesData.now-on-egpu : Text { text: "Runs on the eGPU"; color: Tone.ok; vertical-alignment: center; }
+                        if !GamesData.now-on-egpu : Button { text: "Run on eGPU"; clicked => { GamesData.run-now-on-egpu(); } }
+                    }
+                }
+            }
+
+            Card {
+                VerticalLayout { padding: 16px; spacing: 8px;
+                    HorizontalLayout { spacing: 8px;
+                        Title { text: "Installed games"; }
+                        Text { text: GamesData.scan-note; font-size: 12px; color: Tone.muted; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                        Button { text: GamesData.scanning ? "Scanning..." : "Scan"; enabled: !GamesData.scanning; clicked => { GamesData.scan(); } }
+                        Button { text: GamesData.show-games ? "Hide" : "Show"; clicked => { GamesData.show-games = !GamesData.show-games; } }
+                    }
+                    if GamesData.show-games : VerticalLayout { spacing: 6px;
+                        Text { text: "eGPU on: Windows starts the game on the eGPU from its next start."; font-size: 12px; color: Tone.muted; }
+                        for g[i] in GamesData.installed : Row {
+                            first: i == 0; text: g.name; sub: g.path; tag: g.source;
+                            Switch { checked: g.egpu; text: "eGPU"; toggled => { GamesData.set-egpu(i, self.checked); } }
+                        }
+                    }
+                }
+            }
+
+            Card {
+                VerticalLayout { padding: 16px; spacing: 8px;
+                    HorizontalLayout { spacing: 8px;
+                        Title { text: "Other programs on the eGPU"; }
+                        Text { text: "(" + GamesData.on-egpu.length + ")"; color: Tone.muted; vertical-alignment: center; horizontal-stretch: 1; }
+                        Button { text: GamesData.show-others ? "Hide" : "Show"; clicked => { GamesData.show-others = !GamesData.show-others; } }
+                    }
+                    if GamesData.show-others : VerticalLayout { spacing: 6px;
+                        for p[i] in GamesData.on-egpu : Row {
+                            first: i == 0; text: p.name; sub: p.path;
+                            Button { text: "Remove"; clicked => { GamesData.egpu-remove(i); } }
+                        }
+                    }
+                }
+            }
+
+            Card {
+                VerticalLayout { padding: 16px; spacing: 8px;
+                    HorizontalLayout { spacing: 8px;
+                        Title { text: "Game folders"; }
+                        Text { text: "(" + GamesData.folders.length + ")"; color: Tone.muted; vertical-alignment: center; horizontal-stretch: 1; }
+                        Button { text: GamesData.show-folders ? "Hide" : "Show"; clicked => { GamesData.show-folders = !GamesData.show-folders; } }
+                    }
+                    if GamesData.show-folders : VerticalLayout { spacing: 6px;
+                        Text { text: "Programs started from these count as games (game mode, integer scaling hand-over)."; font-size: 12px; color: Tone.muted; wrap: word-wrap; }
+                        for f[i] in GamesData.folders : Row {
+                            first: i == 0; text: f.name; sub: f.path;
+                            Button { text: "Remove"; clicked => { GamesData.folder-remove(i); } }
+                        }
+                        HorizontalLayout { alignment: start; Button { text: "+ Add folder"; clicked => { GamesData.folder-add(); } } }
+                    }
+                }
+            }
+
+            Card {
+                VerticalLayout { padding: 16px; spacing: 8px;
+                    HorizontalLayout { spacing: 8px;
+                        Title { text: "Game programs"; }
+                        Text { text: "(" + GamesData.programs.length + ")"; color: Tone.muted; vertical-alignment: center; horizontal-stretch: 1; }
+                        Button { text: GamesData.show-programs ? "Hide" : "Show"; clicked => { GamesData.show-programs = !GamesData.show-programs; } }
+                    }
+                    if GamesData.show-programs : VerticalLayout { spacing: 6px;
+                        Text { text: "Games outside those folders. Adding one also turns on its eGPU."; font-size: 12px; color: Tone.muted; }
+                        for f[i] in GamesData.programs : Row {
+                            first: i == 0; text: f;
+                            Button { text: "Remove"; clicked => { GamesData.program-remove(i); } }
+                        }
+                        HorizontalLayout { alignment: start; Button { text: "+ Add program"; clicked => { GamesData.program-add(); } } }
+                    }
+                }
+            }
+        }
+    }
+}
