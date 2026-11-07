@@ -64,6 +64,26 @@ pub fn command_exe(cmd: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Option
     if exe.is_empty() { None } else { Some(normalize_path(exe, &sysroot)) }
 }
 
+/// The arguments after the program in a command line (`command_exe`'s rest), env expanded.
+pub fn command_args(cmd: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
+    let s = expand_env(cmd.trim(), lookup);
+    let s = s.trim();
+    let rest = if let Some(q) = s.strip_prefix('"') {
+        q.split_once('"').map_or("", |(_, r)| r)
+    } else {
+        let lower = s.to_ascii_lowercase();
+        let mut from = 0;
+        let mut cut = None;
+        while let Some(i) = lower[from..].find(".exe") {
+            let end = from + i + 4;
+            if end == s.len() || s[end..].starts_with([' ', '\t', '"', ',']) { cut = Some(end); break; }
+            from = end;
+        }
+        match cut { Some(end) => &s[end..], None => s.split_once(char::is_whitespace).map_or("", |(_, r)| r) }
+    };
+    rest.trim().to_string()
+}
+
 /// `%LOCALAPPDATA%\keel` (known-folder API; see `keel_core::paths`).
 pub use keel_core::paths::user_data_dir;
 
@@ -190,5 +210,13 @@ mod tests {
         assert_eq!(t[0], TaskAction { task: r"\Vendor\Updater".into(), command: r#""C:\Program Files\V\up.exe""#.into(), arguments: "/silent & /q".into(), enabled: false });
         assert!(t[1].enabled);
         assert_eq!(command_exe(&t[1].command, &env).unwrap(), r"c:\windows\system32\o.exe");
+    }
+
+    #[test]
+    fn command_args_after_the_program() {
+        let none = |_: &str| None;
+        assert_eq!(super::command_args(r#""C:\Program Files\Microsoft OneDrive\OneDrive.exe" /background"#, &none), "/background");
+        assert_eq!(super::command_args(r"C:\Program Files\Zoom\bin\Zoom.exe --autostart", &none), "--autostart");
+        assert_eq!(super::command_args(r"C:\Apps\tool.exe", &none), "");
     }
 }

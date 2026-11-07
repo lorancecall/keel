@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.33
+
+- AI mode starts the startup apps it closed (OneDrive and others started from a Run key or the
+  Startup folder) again when the model unloads, with their own command line. Apps that were not
+  running before are not started.
+
 ## 0.1.32
 
 - Network works with any wired adapter and on any Windows language: Wi-Fi and LAN are found by

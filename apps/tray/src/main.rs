@@ -287,6 +287,7 @@ fn ask_ai_switch(tx: &Sender<Done>, busy: &Arc<AtomicBool>, off: Vec<String>, on
     std::thread::spawn(move || {
         let log = |m: String| { let _ = tx.send(Done::AiLog(m)); };
         if !off.is_empty() {
+            let before = startup_apps_running();
             match keel_ram::pipe::call_wait(&Request::Ai { keys: off, off: true }, Duration::from_secs(120)) {
                 Ok(r) => {
                     if !r.ok { log(format!("ai mode: {}", r.message)); }
@@ -294,11 +295,19 @@ fn ask_ai_switch(tx: &Sender<Done>, busy: &Arc<AtomicBool>, off: Vec<String>, on
                 }
                 Err(e) => log(format!("ai mode: {e:#}")),
             }
+            // Startup apps AI mode closed: started again when the model unloads.
+            let now = running_exes();
+            let closed: Vec<(String, String)> = before.into_iter().filter(|(exe, _)| !now.contains(exe)).collect();
+            if !closed.is_empty() {
+                let mut all = relaunch_load();
+                for c in closed { if !all.contains(&c) { all.push(c); } }
+                if let Err(e) = relaunch_save(&all) { log(format!("ai mode: {}: {e:#}", relaunch_path().display())); }
+            }
         }
         if !on.is_empty() {
             match keel_ram::pipe::call_wait(&Request::Ai { keys: on, off: false }, Duration::from_secs(120)) {
                 Ok(r) if !r.ok => log(format!("ai mode: {}", r.message)),
-                Ok(_) => {}
+                Ok(_) => { for m in relaunch_closed() { log(m); } }
                 Err(e) => log(format!("ai mode: {e:#}")),
             }
         }
@@ -331,6 +340,63 @@ fn close_user_apps(keys: &[String]) -> Vec<String> {
             });
         }
     }
+    out
+}
+
+/// Exe paths (lowercase) of the running processes this user can see.
+fn running_exes() -> Vec<String> {
+    use keel_ram::procs;
+    let devmap = procs::device_map();
+    procs::snapshot().unwrap_or_default().iter().filter_map(|p| procs::image_path(p.pid, &devmap).0).map(|p| p.to_lowercase()).collect()
+}
+
+/// Enabled Run-key and Startup-folder apps that run now: (exe, command line).
+fn startup_apps_running() -> Vec<(String, String)> {
+    use keel_ram::sources;
+    let now = running_exes();
+    let mut out: Vec<(String, String)> = sources::run_entries().into_iter().chain(sources::startup_entries())
+        .filter(|l| l.kind != "runonce" && l.enabled != Some(false))
+        .filter_map(|l| l.exe.map(|e| (e.to_lowercase(), l.command)))
+        .filter(|(e, _)| now.contains(e)).collect();
+    out.sort();
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
+/// `%LOCALAPPDATA%\keel\ai-relaunch.json`: startup apps AI mode closed (kept on disk, so a
+/// tray restart while a model is loaded still starts them again).
+fn relaunch_path() -> PathBuf { keel_core::paths::user_data_dir().join("ai-relaunch.json") }
+fn relaunch_load() -> Vec<(String, String)> {
+    std::fs::read_to_string(relaunch_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+fn relaunch_save(v: &[(String, String)]) -> anyhow::Result<()> {
+    let p = relaunch_path();
+    if let Some(d) = p.parent() { std::fs::create_dir_all(d)?; }
+    std::fs::write(p, serde_json::to_string_pretty(v)?)?;
+    Ok(())
+}
+
+/// Starts the recorded startup apps again with their own command lines (not when already running).
+fn relaunch_closed() -> Vec<String> {
+    use std::os::windows::process::CommandExt;
+    let list = relaunch_load();
+    if list.is_empty() { return Vec::new(); }
+    let now = running_exes();
+    let mut out = Vec::new();
+    for (exe, cmd) in &list {
+        if now.contains(exe) { continue; }
+        let path = PathBuf::from(exe);
+        let args = keel_ram::paths::command_args(cmd, &keel_ram::sources::env_lookup);
+        let mut c = keel_core::cmd::windowed(&path);
+        if !args.is_empty() { c.raw_arg(&args); }
+        if let Some(d) = path.parent() { c.current_dir(d); }
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        out.push(match c.spawn() {
+            Ok(_) => format!("ai mode: started {name} again"),
+            Err(e) => format!("ai mode: start {name}: {e}"),
+        });
+    }
+    let _ = std::fs::remove_file(relaunch_path());
     out
 }
 
