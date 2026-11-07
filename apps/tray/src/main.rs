@@ -151,7 +151,7 @@ fn mtime(p: &Path) -> Option<SystemTime> { std::fs::metadata(p).and_then(|m| m.m
 // ------------------------------------------------------------------ menu
 
 /// Results of pipe calls made on worker threads (they can take seconds).
-enum Done { OnDemand(Option<OdState>), Message(String), Ai(bool, Vec<keel_ram::ondemand::Entry>), AiLog(String) }
+enum Done { OnDemand(Option<OdState>), Message(String), Ai(bool, bool, Vec<keel_ram::ondemand::Entry>), AiLog(String) }
 
 struct Ui {
     tray: TrayIcon,
@@ -266,21 +266,31 @@ fn ask_ondemand(tx: &Sender<Done>, req: Option<Request>) {
 
 /// AI mode check (worker thread): is a model loaded (Ollama only, and only when it runs and AI
 /// mode is on), and the service's on-demand entries.
-fn ask_ai(tx: &Sender<Done>, mode_on: bool) {
+fn ask_ai(tx: &Sender<Done>, ai_on: bool, game_on: bool) {
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let loaded = mode_on && process_running("ollama.exe")
+        let loaded = ai_on && process_running("ollama.exe")
             && keel_egpu::coord::ollama_loaded(&keel_egpu::config::Config::load().ollama_url).unwrap_or(0) > 0;
+        let game = game_on && egpu::game_running();
         let Ok(r) = keel_ram::pipe::call(&Request::Status) else { return };
-        let _ = tx.send(Done::Ai(loaded, r.state.entries));
+        let _ = tx.send(Done::Ai(loaded, game, r.state.entries));
     });
+}
+
+/// Families AI mode and game mode want off now (keys, each once). Pure; tested.
+fn modes_chosen(ai: Option<&[traycfg::AiApp]>, game: Option<&[traycfg::AiApp]>) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for a in ai.into_iter().flatten().chain(game.into_iter().flatten()) {
+        if !v.contains(&a.key) { v.push(a.key.clone()); }
+    }
+    v
 }
 
 /// AI mode changes on one worker thread: one request to the service for all families to switch
 /// off (it scans once), then the tray closes, with the user's rights, the processes of families
 /// the service cannot switch (installed per user, or nothing machine-wide); then one request to
 /// put families back.
-fn ask_ai_switch(tx: &Sender<Done>, busy: &Arc<AtomicBool>, off: Vec<String>, on: Vec<String>) {
+fn ask_ai_switch(tx: &Sender<Done>, busy: &Arc<AtomicBool>, off: Vec<String>, on: Vec<String>, all_back: bool) {
     if off.is_empty() && on.is_empty() { return; }
     let (tx, busy) = (tx.clone(), busy.clone());
     busy.store(true, Ordering::SeqCst);
@@ -307,7 +317,10 @@ fn ask_ai_switch(tx: &Sender<Done>, busy: &Arc<AtomicBool>, off: Vec<String>, on
         if !on.is_empty() {
             match keel_ram::pipe::call_wait(&Request::Ai { keys: on, off: false }, Duration::from_secs(120)) {
                 Ok(r) if !r.ok => log(format!("ai mode: {}", r.message)),
-                Ok(_) => { for m in relaunch_closed() { log(m); } }
+                // Startup apps start again once neither mode wants anything off (which app a
+                // closed process belonged to is not kept).
+                Ok(_) if all_back => { for m in relaunch_closed() { log(m); } }
+                Ok(_) => {}
                 Err(e) => log(format!("ai mode: {e:#}")),
             }
         }
@@ -502,16 +515,18 @@ fn main() -> anyhow::Result<()> {
                 Done::OnDemand(s) => ui.set_ondemand(&s),
                 Done::Message(m) => { tray_log(&m); notify(&m); ui.set_internet(); }
                 // Plans made while earlier changes still run would repeat them.
-                Done::Ai(_, _) if ai_busy.load(Ordering::SeqCst) => {}
-                Done::Ai(loaded, entries) => {
-                    if !loaded { ai_failed.clear(); }
-                    let chosen: Vec<String> = st.prefs.ai_mode_apps.iter().map(|a| a.key.clone()).collect();
-                    let (off, back) = keel_ram::ondemand::ai_plan(loaded, &chosen, &entries, &ai_failed);
+                Done::Ai(..) if ai_busy.load(Ordering::SeqCst) => {}
+                Done::Ai(loaded, game, entries) => {
+                    let chosen = modes_chosen(loaded.then_some(&st.prefs.ai_mode_apps[..]), game.then_some(&st.prefs.game_mode_apps[..]));
+                    let active = !chosen.is_empty();
+                    if !active { ai_failed.clear(); }
+                    let (off, back) = keel_ram::ondemand::ai_plan(active, &chosen, &entries, &ai_failed);
                     ai_pending = entries.iter().any(|e| e.ai_off) || !off.is_empty();
-                    if !off.is_empty() { tray_log(&format!("ai mode: model loaded, switching off {}", off.join(", "))); }
+                    let why = match (loaded, game) { (true, true) => "model loaded, game running", (true, false) => "model loaded", _ => "game running" };
+                    if !off.is_empty() { tray_log(&format!("ai mode: {why}, switching off {}", off.join(", "))); }
                     if !back.is_empty() { tray_log(&format!("ai mode: putting back {}", back.join(", "))); }
                     ai_failed.extend(off.iter().cloned());
-                    ask_ai_switch(&tx, &ai_busy, off, back);
+                    ask_ai_switch(&tx, &ai_busy, off, back, !active);
                 }
                 Done::AiLog(m) => tray_log(&m),
             }
@@ -529,7 +544,7 @@ fn main() -> anyhow::Result<()> {
         if ticks % 5 == 0 { ram = memory_line(); ui.ram_line.set_text(&ram); }
         if ticks % 10 == 0 { net = net_line(); ui.net_line.set_text(&net); }
         // AI mode on, or families it switched off still to put back (also after a reboot).
-        if ticks % 10 == 5 && (st.prefs.ai_mode || ai_pending) { ask_ai(&tx, st.prefs.ai_mode); }
+        if ticks % 10 == 5 && (st.prefs.ai_mode || st.prefs.game_mode || ai_pending) { ask_ai(&tx, st.prefs.ai_mode, st.prefs.game_mode); }
         if ticks % 30 == 0 {
             if st.prefs.has("ram.ondemand") { ask_ondemand(&tx, None); }
             if st.prefs.has("net.internet") { ui.set_internet(); }
@@ -550,5 +565,20 @@ fn main() -> anyhow::Result<()> {
         }
         let _ = ui.tray.set_tooltip(Some(tooltip(&ram, &st.tip, &net)));
         if ticks % 600 == 0 { keel_core::trim::working_set(); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use keel_core::traycfg::AiApp;
+
+    #[test]
+    fn ai_and_game_mode_lists_join() {
+        let a = |k: &str| AiApp { key: k.into(), name: k.into() };
+        let ai = [a("adobe"), a("onedrive")];
+        let game = [a("onedrive"), a("zoom")];
+        assert_eq!(super::modes_chosen(Some(&ai), Some(&game)), ["adobe", "onedrive", "zoom"]);
+        assert_eq!(super::modes_chosen(None, Some(&game)), ["onedrive", "zoom"]);
+        assert!(super::modes_chosen(None, None).is_empty());
     }
 }

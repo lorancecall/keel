@@ -57,6 +57,9 @@ fn running() -> Option<(String, String)> {
 pub fn refresh(ui: &MainWindow) {
     let d = ui.global::<GamesData>();
     let cfg = keel_egpu::config::Config::load();
+    let p = keel_core::traycfg::Prefs::load();
+    d.set_game_mode(p.game_mode);
+    d.set_game_apps(ModelRc::new(VecModel::from(p.game_mode_apps.iter().map(|a| SharedString::from(a.name.as_str())).collect::<Vec<_>>())));
     match running() {
         Some((name, path)) => {
             d.set_has_game(true);
@@ -144,6 +147,15 @@ fn set_pref(ui: &MainWindow, exe: &str, on: bool) {
 
 pub fn wire(ui: &MainWindow) {
     let d = ui.global::<GamesData>();
+    let w = ui.as_weak();
+    d.on_game_mode_changed(move || if let Some(ui) = w.upgrade() {
+        let mut p = keel_core::traycfg::Prefs::load();
+        p.game_mode = ui.global::<GamesData>().get_game_mode();
+        ui.global::<GamesData>().set_result(match p.save() {
+            Ok(()) => if p.game_mode { "Game mode on".into() } else { "Game mode off".into() },
+            Err(e) => format!("{e:#}").into(),
+        });
+    });
     let w = ui.as_weak();
     d.on_refresh(move || if let Some(ui) = w.upgrade() {
         refresh(&ui);

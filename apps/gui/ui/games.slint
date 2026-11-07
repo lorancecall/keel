@@ -22,6 +22,10 @@ export global GamesData {
     in property <[GameApp]> folders;
     in property <[string]> programs;
     in property <string> result;
+    // Game mode: app families (picked on the Apps page) switched off while a game runs.
+    in-out property <bool> game-mode;
+    in property <[string]> game-apps;
+    callback game-mode-changed();
     callback refresh();
     callback scan();
     callback set-egpu(int, bool);
@@ -111,6 +115,18 @@ export component GamesPage inherits VerticalLayout {
                         if GamesData.now-on-egpu : Text { text: "Runs on the eGPU"; color: Tone.ok; vertical-alignment: center; }
                         if !GamesData.now-on-egpu : Button { text: "Run on eGPU"; clicked => { GamesData.run-now-on-egpu(); } }
                     }
+                }
+            }
+
+            Card {
+                VerticalLayout { padding: 16px; spacing: 6px;
+                    HorizontalLayout { spacing: 8px;
+                        Title { text: "Game mode"; horizontal-stretch: 1; }
+                        Switch { checked <=> GamesData.game-mode; toggled => { GamesData.game-mode-changed(); } }
+                    }
+                    Text { text: "While a game runs (on the eGPU or the built-in GPU), these apps are switched off; they come back when it exits."; font-size: 12px; color: Tone.muted; wrap: word-wrap; }
+                    if GamesData.game-apps.length == 0 : Text { text: "No apps yet: pick them on the Apps page (Game mode box)."; wrap: word-wrap; }
+                    for a[i] in GamesData.game-apps : Row { first: i == 0; text: a; }
                 }
             }
 

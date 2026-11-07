@@ -506,7 +506,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_app_hint(if hints.is_empty() { SharedString::new() } else { format!("app exe (startup items run: {hints})").into() });
                 let current = d.od.as_ref().and_then(|s| s.entries.iter().find(|e| e.key == f.key)).map(|e| e.apps.join(" ")).unwrap_or_default();
                 ui.set_app_exe(current.into());
-                ui.set_fam_ai(keel_core::traycfg::Prefs::load().ai_mode_apps.iter().any(|a| a.key == f.key));
+                let p = keel_core::traycfg::Prefs::load();
+                ui.set_fam_ai(p.ai_mode_apps.iter().any(|a| a.key == f.key));
+                ui.set_fam_game(p.game_mode_apps.iter().any(|a| a.key == f.key));
             }
         });
     }
@@ -580,6 +582,27 @@ fn main() -> Result<(), slint::PlatformError> {
                 Ok(()) => format!("{}: not in AI mode", f.name).into(),
                 Err(e) => format!("{e:#}").into(),
             });
+        });
+    }
+    {
+        let d = data.clone(); let w = ui.as_weak();
+        ui.on_fam_game_toggled(move |on| {
+            let Some(ui) = w.upgrade() else { return };
+            let Some(f) = d.lock().unwrap().families.get(ui.get_fam_row() as usize).cloned() else { return };
+            if on && f.protected.is_some() {
+                ui.set_fam_game(false);
+                ui.set_status(format!("{} is protected: Keel does not switch it off", f.name).into());
+                return;
+            }
+            let mut p = keel_core::traycfg::Prefs::load();
+            p.game_mode_apps.retain(|a| a.key != f.key);
+            if on { p.game_mode_apps.push(keel_core::traycfg::AiApp { key: f.key.clone(), name: f.name.clone() }); }
+            ui.set_status(match p.save() {
+                Ok(()) if on => format!("{}: switched off in game mode{}", f.name, if p.game_mode { "" } else { " (game mode is off: GPU apps)" }).into(),
+                Ok(()) => format!("{}: not in game mode", f.name).into(),
+                Err(e) => format!("{e:#}").into(),
+            });
+            games::refresh(&ui);
         });
     }
     games::wire(&ui);

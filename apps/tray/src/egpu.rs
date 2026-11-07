@@ -44,6 +44,9 @@ struct Status {
     alerts: Vec<Alert>,
 }
 
+/// Whether the service sees a game running (GPU apps page: folders and programs; any GPU).
+pub fn game_running() -> bool { read_status().is_some_and(|s| s.game.is_some()) }
+
 fn read_status() -> Option<Status> {
     serde_json::from_str(&std::fs::read_to_string(status_path()).ok()?).ok()
 }

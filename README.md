@@ -41,7 +41,8 @@ and a small amount of RAM working together: one background service, a tray icon 
 - **Local AI that behaves on an eGPU.** Shows how much eGPU memory is free, which installed
   Ollama models fit in it and which would spill into system RAM, and what is loaded now (GPU vs
   RAM split, unload, end Ollama). Models are unloaded when a game starts and when the eGPU is
-  unplugged. AI mode switches apps you pick off while a model is loaded.
+  unplugged. AI mode switches apps you pick off while a model is loaded; game mode does the same
+  while a game runs (on any GPU).
 - **On-demand apps.** Apps leave helpers behind: services, scheduled tasks, startup entries,
   updaters. Keel groups them by vendor and install folder into *families* and keeps a family off
   until you use it: "Keep off", or "Follow app" (on while the app runs, off again after it exits).
@@ -113,7 +114,7 @@ Keel runs a service as LocalSystem, so it can change the system. Here is all of 
 |---|---|---|
 | eGPU | power limit and clock ceilings (NVIDIA), Radeon features, NVIDIA 3D settings, display modes and scaling, the AMD eGPU's driver binding, a Windows Update block for that driver | only what you set; profiles start at the driver defaults |
 | eGPU | stops / starts NVIDIA's helper services | only if you turn that option on |
-| On-demand apps / AI mode | service start types, scheduled tasks, startup entries of app families you pick; ends their processes | only families you pick; never Windows core, GPU drivers, the handheld vendor's or security software |
+| On-demand apps / AI and game mode | service start types, scheduled tasks, startup entries of app families you pick; ends their processes | only families you pick; never Windows core, GPU drivers, the handheld vendor's or security software |
 | Network | interface metrics, routes, firewall rules for VPN kill switches | only after you turn Network on and set it up |
 
 - Every change is recorded first (registry exports, original values) and is put back by

@@ -63,6 +63,9 @@ pub struct Prefs {
     /// are switched off by the service, and back on when it unloads.
     pub ai_mode: bool,
     pub ai_mode_apps: Vec<AiApp>,
+    /// Game mode: the same, while a game (GPU apps page: folders and programs) runs, on any GPU.
+    pub game_mode: bool,
+    pub game_mode_apps: Vec<AiApp>,
     /// Home widget order ("memory", "egpu", "network"); empty: the default order.
     pub home_order: Vec<String>,
     /// External GPU page: the Tuning section above Live.
@@ -80,6 +83,7 @@ impl Default for Prefs {
         Self { favorites: default_favorites(), legion_space_pin: false, prune_amd_tray_icons: true, egpu_primary_display: false,
                restart_search_after_scaling: true, notifications: true, side_menu: 0, hidden_widgets: Vec::new(),
                keep_memory_history: false, fast_samples: false, home_order: Vec::new(), egpu_tuning_first: false, ai_mode: false, ai_mode_apps: Vec::new(),
+               game_mode: false, game_mode_apps: Vec::new(),
                icon_color: String::new(), icon_style: 0, tray_icon_color: false, watched: Vec::new(), ignored: Vec::new() }
     }
 }

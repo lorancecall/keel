@@ -167,7 +167,7 @@ impl Daemon {
         let errs = apply_off(e);
         let name = e.family.clone();
         let _ = self.persist();
-        log(format!("{name}: AI model loaded, switched off{}", if errs.is_empty() { String::new() } else { format!(" ({})", errs.join("; ")) }));
+        log(format!("{name}: AI / game mode, switched off{}", if errs.is_empty() { String::new() } else { format!(" ({})", errs.join("; ")) }));
         (!errs.is_empty()).then(|| format!("{name}: {}", errs.join("; ")))
     }
 
@@ -247,7 +247,7 @@ impl Daemon {
                         if e.on { vec![] } else { apply_on(e) }
                     };
                     let _ = self.persist();
-                    log(format!("{key}: AI model unloaded, back on{}", if e_errs.is_empty() { String::new() } else { format!(" ({})", e_errs.join("; ")) }));
+                    log(format!("{key}: AI / game mode over, back on{}", if e_errs.is_empty() { String::new() } else { format!(" ({})", e_errs.join("; ")) }));
                     errs.extend(e_errs);
                 }
                 self.reply(errs.is_empty(), if errs.is_empty() { "back on".to_string() } else { errs.join("; ") })

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.34
+
+- Game mode: app families picked on the Apps page (Game mode box) are switched off while a game
+  runs, on the eGPU or the built-in GPU, and come back when it exits (startup apps start again).
+  A game is what the GPU apps page counts as one (game folders and programs); the switch is on
+  that page. AI mode and game mode share the work: an app in both lists stays off until both end.
+
 ## 0.1.33
 
 - AI mode starts the startup apps it closed (OneDrive and others started from a Run key or the

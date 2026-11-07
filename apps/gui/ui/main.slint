@@ -49,6 +49,8 @@ export component MainWindow inherits Window {
     // Apps page: the selected family is switched off in AI mode (Local AI page).
     in-out property <bool> fam-ai;
     callback fam-ai-toggled(bool);
+    in-out property <bool> fam-game;
+    callback fam-game-toggled(bool);
     in-out property <int> fam-row: -1;
     in-out property <int> managed-row: -1;
     // overview
@@ -168,11 +170,12 @@ export component MainWindow inherits Window {
                         }
                     }
                     GroupBox {
-                        title: "AI mode";
+                        title: "AI mode / Game mode";
                         vertical-stretch: 0;
                         VerticalLayout { spacing: 6px; alignment: start;
                             CheckBox { text: "Switch off while a local AI model is loaded"; enabled: root.fam-row >= 0; checked <=> root.fam-ai; toggled => { root.fam-ai-toggled(self.checked); } }
-                            Text { text: "Its services, tasks and running processes stop; they come back when the model unloads. Turn AI mode on under Local AI."; wrap: word-wrap; font-size: 12px; opacity: 0.7; }
+                            CheckBox { text: "Switch off while a game runs"; enabled: root.fam-row >= 0; checked <=> root.fam-game; toggled => { root.fam-game-toggled(self.checked); } }
+                            Text { text: "Its services, tasks and running processes stop; they come back (startup apps start again) afterwards. Turn the modes on under Local AI and GPU apps."; wrap: word-wrap; font-size: 12px; opacity: 0.7; }
                         }
                     }
                     TextEdit { text: root.details == "" ? "Select a family to see what it installed." : root.details; read-only: true; vertical-stretch: 1; font-size: 12px; }
