@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/core", "crates/ram", "crates/egpu", "crates/net", "crates/service", "apps/keel", "apps/tray", "apps/gui"]
 
 [workspace.package]
-version = "0.1.37"
+version = "0.1.38"
 edition = "2024"
 
 [workspace.dependencies]

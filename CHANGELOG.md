@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.38
+
+- The tray panel is placed again whenever its size changes. It was placed with the size it had
+  when first shown; at 200 % scale (4K) the window grew afterwards and its bottom ran off the
+  screen under the taskbar.
+
 ## 0.1.37
 
 - Game mode can also keep the main display only: the other displays are turned off while a game

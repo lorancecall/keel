@@ -152,12 +152,21 @@ pub fn run(icon: (i32, i32, i32, i32)) -> Result<(), slint::PlatformError> {
     {
         let w = f.as_weak();
         let mut n = 0u32;
+        let mut placed = size;
         tick.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
             let Some(f) = w.upgrade() else { return };
             n += 1;
             let own = unsafe { windows::Win32::UI::WindowsAndMessaging::FindWindowW(windows::core::PCWSTR::null(), windows::core::w!("Keel panel")) };
             // Give the window a moment to become the foreground one before watching.
             if n > 4 && own.as_ref().is_ok_and(|h| lost_focus(*h)) { let _ = slint::quit_event_loop(); return; }
+            // Rows filled in later (displays read on a worker) make the panel taller: place it again,
+            // or its bottom ran off the screen under the taskbar.
+            let now = f.window().size();
+            if now != placed {
+                placed = now;
+                let (x, y) = place(icon, (now.width as i32, now.height as i32), work_area((icon.0, icon.1)));
+                f.window().set_position(slint::PhysicalPosition::new(x, y));
+            }
             if n % 8 == 0 { memory(&f); egpu(&f); }
             if n % 40 == 0 { network(&f); display_rows(&f); }
         });
