@@ -248,6 +248,8 @@ export component EgpuPage inherits ScrollView {
         width: root.visible-width;
         spacing: 14px;
         padding-right: 12px;
+        // Wrapped texts can come out taller than measured: room so the last row is not cut off.
+        padding-bottom: 32px;
         alignment: start;
 
         HorizontalLayout {
@@ -533,7 +535,8 @@ export component EgpuPage inherits ScrollView {
             Section { text: "OPTIONS (THE TRAY DOES THESE)"; }
             CheckBox {
                 text: "Keep Legion Space on the iGPU and the built-in screen";
-                enabled: EgpuData.legion-ok;
+                // Off works any time (it also clears the iGPU preference); on needs the built-in screen as main.
+                enabled: EgpuData.legion-ok || EgpuData.opt-legion;
                 Tooltip {
                     text: EgpuData.legion-ok ? @markdown("Moves Legion Space's windows to the built-in screen.")
                         : @markdown("Needs the built-in screen as main display.");

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.39
+
+- "Make main display" works again on an AMD eGPU monitor with integer scaling on: the main
+  display is now set in one SetDisplayConfig call (every desktop shifted by the same offset), as
+  Settings does; staging positions with ChangeDisplaySettingsEx failed with -1 there.
+- "Keep Legion Space on the iGPU and the built-in screen" can be turned off at any time; turning
+  it on still needs the built-in screen as the main display.
+- The External GPU page has more room at the bottom, so its last row is not cut off in a
+  narrow window.
+
 ## 0.1.38
 
 - The tray panel is placed again whenever its size changes. It was placed with the size it had

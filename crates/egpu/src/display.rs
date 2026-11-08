@@ -304,22 +304,39 @@ pub fn primary_step(handled: bool, egpu: &[String], primary: Option<&str>) -> Pr
     PrimaryStep::Set(first.clone())
 }
 
-/// Makes `target` the primary display in one topology change: every display's new position is
-/// staged in the registry (CDS_NORESET), then applied together.
+/// Makes `target` the primary display in one topology change (SetDisplayConfig): every desktop
+/// is shifted by the same offset so `target` starts at (0, 0) and the arrangement stays. Saved
+/// like a change in Settings. (Staging positions with ChangeDisplaySettingsEx failed with -1 on
+/// an AMD eGPU monitor with integer scaling on.)
 pub fn set_primary(target: &str) -> anyhow::Result<()> {
-    let layout = shifted(&positions(), target).ok_or_else(|| anyhow::anyhow!("{target}: not an active display"))?;
-    for (name, x, y) in &layout {
-        let mut dm = devmode_of(name, ENUM_CURRENT_SETTINGS).ok_or_else(|| anyhow::anyhow!("{name}: no current mode"))?;
-        dm.Anonymous1.Anonymous2.dmPosition = windows::Win32::Foundation::POINTL { x: *x, y: *y };
-        dm.dmFields = DM_POSITION;
-        let mut flags = CDS_UPDATEREGISTRY | CDS_NORESET;
-        if name.eq_ignore_ascii_case(target) { flags |= CDS_SET_PRIMARY; }
-        let r = unsafe { ChangeDisplaySettingsExW(&HSTRING::from(name.as_str()), Some(&dm), None, flags, None) };
-        anyhow::ensure!(r == DISP_CHANGE_SUCCESSFUL, "{name}: staging position returned {}", r.0);
+    unsafe {
+        let (mut np, mut nm) = (0u32, 0u32);
+        GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).ok()?;
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+        QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut np, paths.as_mut_ptr(), &mut nm, modes.as_mut_ptr(), None).ok()?;
+        paths.truncate(np as usize);
+        modes.truncate(nm as usize);
+        let idx = paths.iter().find(|p| {
+            let mut src = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+            src.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            src.header.size = std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
+            src.header.adapterId = p.sourceInfo.adapterId;
+            src.header.id = p.sourceInfo.id;
+            DisplayConfigGetDeviceInfo(&mut src.header) == 0 && utf16(&src.viewGdiDeviceName).eq_ignore_ascii_case(target)
+        }).map(|p| p.sourceInfo.Anonymous.modeInfoIdx as usize).ok_or_else(|| anyhow::anyhow!("{target}: not an active display"))?;
+        let m = modes.get(idx).filter(|m| m.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE)
+            .ok_or_else(|| anyhow::anyhow!("{target}: no desktop position"))?;
+        let (tx, ty) = (m.Anonymous.sourceMode.position.x, m.Anonymous.sourceMode.position.y);
+        if (tx, ty) == (0, 0) { return Ok(()); }
+        for m in modes.iter_mut().filter(|m| m.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
+            m.Anonymous.sourceMode.position.x -= tx;
+            m.Anonymous.sourceMode.position.y -= ty;
+        }
+        let r = SetDisplayConfig(Some(&paths), Some(&modes), SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE | SDC_ALLOW_CHANGES);
+        anyhow::ensure!(r == 0, "SetDisplayConfig returned {r}");
+        Ok(())
     }
-    let r = unsafe { ChangeDisplaySettingsExW(None, None, None, CDS_TYPE(0), None) };
-    anyhow::ensure!(r == DISP_CHANGE_SUCCESSFUL, "applying the layout returned {}", r.0);
-    Ok(())
 }
 
 /// Which active paths stay on for "main display only": those whose desktop starts at (0, 0)
