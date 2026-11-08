@@ -2678,7 +2678,7 @@ dependencies = [
 
 [[package]]
 name = "keel"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2696,7 +2696,7 @@ dependencies = [
 
 [[package]]
 name = "keel-core"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2709,7 +2709,7 @@ dependencies = [
 
 [[package]]
 name = "keel-egpu"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "adlx-lite",
  "anyhow",
@@ -2729,7 +2729,7 @@ dependencies = [
 
 [[package]]
 name = "keel-gui"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2749,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "keel-net"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2763,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "keel-ram"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2776,7 +2776,7 @@ dependencies = [
 
 [[package]]
 name = "keel-service"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "keel-core",
@@ -2791,7 +2791,7 @@ dependencies = [
 
 [[package]]
 name = "keel-tray"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "chrono",

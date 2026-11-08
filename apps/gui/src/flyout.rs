@@ -117,7 +117,8 @@ pub fn run(icon: (i32, i32, i32, i32)) -> Result<(), slint::PlatformError> {
         let exe = std::env::current_exe().unwrap_or_default();
         let mut c = keel_core::cmd::windowed(exe);
         if !tab.is_empty() { c.args(["--tab", tab.as_str()]); }
-        let _ = c.spawn();
+        // The panel has the foreground: let the window take it (it calls SetForegroundWindow).
+        if let Ok(child) = c.spawn() { unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(child.id()); } }
         let _ = slint::quit_event_loop();
     });
     f.on_dismiss(|| { let _ = slint::quit_event_loop(); });

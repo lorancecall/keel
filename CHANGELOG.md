@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.36
+
+- Local AI is now a tab of GPU apps: eGPU memory stays on top, with Games and Local AI tabs
+  below (the side menu no longer has a Local AI item; `--tab local-ai` opens the tab).
+- The main window opened from the tray or the tray panel comes to the front instead of behind
+  the active window.
+- Parts of the main window could stay see-through or show an old page after a display or
+  monitor change (the software renderer only redraws what changed); the whole window is now
+  redrawn after such changes, when it becomes active and every 10 seconds.
+- Scroll bars get their own room at the right of a page instead of covering the cards.
+
 ## 0.1.35
 
 - AI / game mode also starts again a startup app whose startup item is off (On-demand apps

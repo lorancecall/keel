@@ -6,7 +6,7 @@ import { EgpuPage, EgpuData } from "egpu.slint";
 import { HomePage, HomeData } from "home.slint";
 import { MemHistoryPage, MemHistData } from "memhistory.slint";
 import { DisplaysPage, DisplaysData } from "displays.slint";
-import { LocalAiPage, LocalAiData } from "localai.slint";
+import { LocalAiData } from "localai.slint";
 import { Flyout } from "flyout.slint";
 import { GamesPage, GamesData } from "games.slint";
 export { Pages, EgpuData, HomeData, MemHistData, DisplaysData, LocalAiData, Flyout, GamesData }
@@ -30,6 +30,8 @@ export component MainWindow inherits Window {
     in property <string> status;
     in property <bool> busy;
     in-out property <int> page;
+    // Bumped by src/main.rs (repaint_check) to redraw the whole window: see the overlay at the end.
+    in property <int> repaint;
     // Settings > Side menu: 0 icon and text, 1 icons only, 2 text only.
     in-out property <int> side-menu;
     callback side-menu-changed(int);
@@ -46,7 +48,7 @@ export component MainWindow inherits Window {
     in property <string> details;
     in property <string> app-hint;
     in-out property <string> app-exe;
-    // Apps page: the selected family is switched off in AI mode (Local AI page).
+    // Apps page: the selected family is switched off in AI mode / game mode (GPU apps page).
     in-out property <bool> fam-ai;
     callback fam-ai-toggled(bool);
     in-out property <bool> fam-game;
@@ -115,9 +117,7 @@ export component MainWindow inherits Window {
         SideMenu {
             mode: root.side-menu;
             page: root.page;
-            // Local AI runs on the eGPU: without one it only takes system memory.
-            local-ai-on: EgpuData.attached;
-            picked(p) => { root.page = p; if (p == Pages.memory-history && !root.history-loaded) { MemHistData.reload(); } if (p == Pages.displays) { DisplaysData.refresh(); } if (p == Pages.external-gpu) { EgpuData.amd-load(); EgpuData.nv3d-load(); } if (p == Pages.local-ai) { LocalAiData.refresh(); } if (p == Pages.games) { GamesData.refresh(); } }
+            picked(p) => { root.page = p; if (p == Pages.memory-history && !root.history-loaded) { MemHistData.reload(); } if (p == Pages.displays) { DisplaysData.refresh(); } if (p == Pages.external-gpu) { EgpuData.amd-load(); EgpuData.nv3d-load(); } if (p == Pages.games) { GamesData.refresh(); LocalAiData.refresh(); } }
         }
         VerticalLayout {
             spacing: 8px;
@@ -135,7 +135,7 @@ export component MainWindow inherits Window {
 
             if root.page == Pages.home : HomePage {
                 vertical-stretch: 1;
-                go(p) => { root.page = p; if (p == Pages.memory-history && !root.history-loaded) { MemHistData.reload(); } if (p == Pages.displays) { DisplaysData.refresh(); } if (p == Pages.external-gpu) { EgpuData.amd-load(); EgpuData.nv3d-load(); } if (p == Pages.local-ai) { LocalAiData.refresh(); } if (p == Pages.games) { GamesData.refresh(); } }
+                go(p) => { root.page = p; if (p == Pages.memory-history && !root.history-loaded) { MemHistData.reload(); } if (p == Pages.displays) { DisplaysData.refresh(); } if (p == Pages.external-gpu) { EgpuData.amd-load(); EgpuData.nv3d-load(); } if (p == Pages.games) { GamesData.refresh(); LocalAiData.refresh(); } }
             }
 
             if root.page == 1 : HorizontalLayout {
@@ -175,7 +175,7 @@ export component MainWindow inherits Window {
                         VerticalLayout { spacing: 6px; alignment: start;
                             CheckBox { text: "Switch off while a local AI model is loaded"; enabled: root.fam-row >= 0; checked <=> root.fam-ai; toggled => { root.fam-ai-toggled(self.checked); } }
                             CheckBox { text: "Switch off while a game runs"; enabled: root.fam-row >= 0; checked <=> root.fam-game; toggled => { root.fam-game-toggled(self.checked); } }
-                            Text { text: "Its services, tasks and running processes stop; they come back (startup apps start again) afterwards. Turn the modes on under Local AI and GPU apps."; wrap: word-wrap; font-size: 12px; opacity: 0.7; }
+                            Text { text: "Its services, tasks and running processes stop; they come back (startup apps start again) afterwards. Turn the modes on under GPU apps (Games and Local AI tabs)."; wrap: word-wrap; font-size: 12px; opacity: 0.7; }
                         }
                     }
                     TextEdit { text: root.details == "" ? "Select a family to see what it installed." : root.details; read-only: true; vertical-stretch: 1; font-size: 12px; }
@@ -207,6 +207,7 @@ export component MainWindow inherits Window {
             if root.page == Pages.network : ScrollView {
                 vertical-stretch: 1;
                 VerticalLayout {
+                    padding-right: 14px;   // room for the scroll bar: it no longer covers the cards
                     spacing: 12px;
                     alignment: start;
                     Text { text: "Network"; font-size: 24px; font-weight: 600; }
@@ -305,12 +306,11 @@ export component MainWindow inherits Window {
 
             if root.page == Pages.displays : DisplaysPage { vertical-stretch: 1; }
 
-            if root.page == Pages.local-ai : LocalAiPage { vertical-stretch: 1; }
-
             if root.page == Pages.games : GamesPage { vertical-stretch: 1; }
 
             if root.page == Pages.settings : ScrollView {
                 VerticalLayout {
+                    padding-right: 14px;   // room for the scroll bar: it no longer covers the cards
                     spacing: 10px;
                     alignment: start;
                     Text { text: "Appearance"; font-size: 16px; font-weight: 600; }
@@ -385,4 +385,8 @@ export component MainWindow inherits Window {
             }
         }
     }
+
+    // Full-window overlay, practically invisible (alpha 0 or 1/255): changing it marks the whole
+    // window dirty, so the software renderer draws all of it again (repaint_check in src/main.rs).
+    Rectangle { background: Math.mod(root.repaint, 2) == 1 ? #00000001 : #00000000; }
 }

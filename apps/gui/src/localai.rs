@@ -1,4 +1,4 @@
-//! Local AI page (ui/localai.slint), built around three questions:
+//! Local AI (ui/localai.slint: eGPU memory above the GPU apps tabs, and the Local AI tab), built around three questions:
 //! 1. Is there room on the eGPU for a model now? (its VRAM: total, used by apps, free)
 //! 2. Which installed models fit? (Ollama's manifests on disk, so it works with Ollama off)
 //! 3. What AI runs now, and how much RAM does it take? (Ollama's API when its server runs, other

@@ -67,6 +67,7 @@ export component DisplaysPage inherits VerticalLayout {
     ScrollView {
         vertical-stretch: 1;
         VerticalLayout {
+            padding-right: 14px;   // room for the scroll bar: it no longer covers the cards
             spacing: 10px;
             alignment: start;
             for c[i] in DisplaysData.cards : Card {

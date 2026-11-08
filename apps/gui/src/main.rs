@@ -1,6 +1,6 @@
 //! keel-gui: Keel's main window (Slint, software renderer, Fluent style following the system's dark
 //! / light setting). Only runs while open. Side menu (ui/nav.slint): Home; Memory: Apps,
-//! On-demand apps, Memory history; Graphics: External GPU, Local AI, Displays; Network; Settings
+//! On-demand apps, Memory history; Graphics: External GPU, Displays, GPU apps (games and Local AI tabs); Network; Settings
 //! (appearance, service features, tray menu). Data comes from the libraries (scan, families), the service's pipe
 //! (on-demand, network, features) and the status files the service writes; slow work runs on
 //! worker threads.
@@ -366,13 +366,56 @@ fn shortcut_icon(p: &Prefs) {
     std::thread::spawn(move || { let _ = keel_service::call(&req); });
 }
 
+/// This window's handle: the "Keel" top-level window of this thread (another Keel window may be open).
+fn own_window() -> Option<windows::Win32::Foundation::HWND> {
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, GetWindowTextW};
+    use windows::core::BOOL;
+    unsafe extern "system" fn each(h: HWND, out: LPARAM) -> BOOL {
+        let mut buf = [0u16; 16];
+        let n = unsafe { GetWindowTextW(h, &mut buf) } as usize;
+        if String::from_utf16_lossy(&buf[..n]) == "Keel" { unsafe { *(out.0 as *mut isize) = h.0 as isize; } return false.into(); }
+        true.into()
+    }
+    let mut found: isize = 0;
+    unsafe { let _ = EnumThreadWindows(GetCurrentThreadId(), Some(each), LPARAM(&mut found as *mut isize as isize)); }
+    (found != 0).then(|| HWND(found as _))
+}
+
+/// Brings the new window to the front. The tray or panel that started it allowed this
+/// (AllowSetForegroundWindow); without that Windows opened it behind the active window.
+fn bring_to_front() {
+    use windows::Win32::UI::WindowsAndMessaging::{BringWindowToTop, SetForegroundWindow};
+    let Some(h) = own_window() else { return };
+    unsafe { let _ = BringWindowToTop(h); let _ = SetForegroundWindow(h); }
+}
+
+/// Redraws the whole window when Windows may have dropped its content. The software renderer
+/// only draws what changed, so after a display mode or monitor change (integer scaling, eGPU
+/// attach) parts of the window stayed see-through or showed an old page until they changed.
+/// Checked with the 2 s timer: monitor, desktop size, monitor count, becoming active, and every
+/// 10 s anyway (a full redraw takes a few milliseconds).
+fn repaint_check(ui: &MainWindow) {
+    use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    thread_local! { static LAST: std::cell::Cell<(isize, i32, i32, i32, bool, u32)> = const { std::cell::Cell::new((0, 0, 0, 0, false, 0)) }; }
+    let Some(h) = own_window() else { return };
+    let sig = unsafe { (MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST).0 as isize, GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                        GetSystemMetrics(SM_CYVIRTUALSCREEN), GetSystemMetrics(SM_CMONITORS), GetForegroundWindow() == h) };
+    let (m, x, y, c, fg, n) = LAST.get();
+    let changed = (m, x, y, c) != (sig.0, sig.1, sig.2, sig.3) || (sig.4 && !fg);
+    let n = if changed || n >= 4 { ui.set_repaint(ui.get_repaint().wrapping_add(1)); 0 } else { n + 1 };
+    LAST.set((sig.0, sig.1, sig.2, sig.3, sig.4, n));
+}
+
 fn set_window_icon() {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::*;
-    use windows::core::{w, PCWSTR};
+    use windows::core::PCWSTR;
     unsafe {
-        let Ok(hwnd) = FindWindowW(PCWSTR::null(), w!("Keel")) else { return };
+        let Some(hwnd) = own_window() else { return };
         let Ok(inst) = GetModuleHandleW(None) else { return };
         let p = Prefs::load();
         // The taskbar takes the big icon at the system's icon size (48 px at 150 %).
@@ -406,8 +449,7 @@ fn page_of(ui: &MainWindow, t: &str) -> i32 {
         "background" | "ondemand" | "on-demand" => pages.get_background(),
         "memory-history" | "memory-history+log" | "leaks" => pages.get_memory_history(),
         "egpu" | "external-gpu" => pages.get_external_gpu(),
-        "local-ai" => pages.get_local_ai(),
-        "games" | "gpu-apps" => pages.get_games(),
+        "games" | "gpu-apps" | "local-ai" => pages.get_games(),
         "displays" => pages.get_displays(),
         "network" => pages.get_network(),
         "settings" => pages.get_settings(),
@@ -421,8 +463,12 @@ fn open_page(ui: &MainWindow, t: &str) {
     ui.set_page(p);
     if p == ui.global::<Pages>().get_displays() { ui.global::<DisplaysData>().invoke_refresh(); }
     if p == ui.global::<Pages>().get_external_gpu() { amdtune::load(ui); nv3d::load(ui); }
-    if p == ui.global::<Pages>().get_local_ai() { ui.global::<LocalAiData>().invoke_refresh(); }
-    if p == ui.global::<Pages>().get_games() { ui.global::<GamesData>().invoke_refresh(); }
+    if p == ui.global::<Pages>().get_games() {
+        // Local AI is the second tab of GPU apps ("local-ai" opens it there).
+        ui.global::<GamesData>().set_tab(if t == "local-ai" { 1 } else { 0 });
+        ui.global::<GamesData>().invoke_refresh();
+        ui.global::<LocalAiData>().invoke_refresh();
+    }
     if p == ui.global::<Pages>().get_memory_history() {
         ui.global::<MemHistData>().invoke_reload();
         // "memory-history+log": with the log drawer open.
@@ -578,7 +624,7 @@ fn main() -> Result<(), slint::PlatformError> {
             p.ai_mode_apps.retain(|a| a.key != f.key);
             if on { p.ai_mode_apps.push(keel_core::traycfg::AiApp { key: f.key.clone(), name: f.name.clone() }); }
             ui.set_status(match p.save() {
-                Ok(()) if on => format!("{}: switched off in AI mode{}", f.name, if p.ai_mode { "" } else { " (AI mode is off: Local AI)" }).into(),
+                Ok(()) if on => format!("{}: switched off in AI mode{}", f.name, if p.ai_mode { "" } else { " (AI mode is off: GPU apps > Local AI)" }).into(),
                 Ok(()) => format!("{}: not in AI mode", f.name).into(),
                 Err(e) => format!("{e:#}").into(),
             });
@@ -932,19 +978,20 @@ fn main() -> Result<(), slint::PlatformError> {
         timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(2), move || {
             // Home and External GPU show it; a running stress test is followed on any page.
             if let Some(ui) = w.upgrade() {
+                repaint_check(&ui);
                 if matches!(ui.get_page(), 0 | 4) || EGPU.with_borrow(|pg| pg.stress.is_some()) { show_egpu(&ui); }
                 if ui.get_page() == 0 { home::memory_tick(&ui); }
-                // Local AI: every other tick (4 s), on a worker thread.
-                if ui.get_page() == ui.global::<Pages>().get_local_ai() && TICK.with(|t| { t.set(t.get() + 1); t.get() % 2 == 0 }) {
+                // GPU apps (eGPU memory, Local AI tab): every other tick (4 s), on a worker thread.
+                if ui.get_page() == ui.global::<Pages>().get_games() && TICK.with(|t| { t.set(t.get() + 1); t.get() % 2 == 0 }) {
                     localai::refresh(&ui);
                 }
             }
         });
     }
-    slint::Timer::single_shot(std::time::Duration::from_millis(200), set_window_icon);
+    slint::Timer::single_shot(std::time::Duration::from_millis(200), || { set_window_icon(); bring_to_front(); });
     if ui.get_page() == ui.global::<Pages>().get_memory_history() { ui.global::<MemHistData>().invoke_reload(); }
     if ui.get_page() == ui.global::<Pages>().get_displays() { ui.global::<DisplaysData>().invoke_refresh(); }
-    if ui.get_page() == ui.global::<Pages>().get_games() { ui.global::<GamesData>().invoke_refresh(); }
+    if ui.get_page() == ui.global::<Pages>().get_games() { ui.global::<GamesData>().invoke_refresh(); ui.global::<LocalAiData>().invoke_refresh(); }
     let _ = (Rc::new(()), ui.get_favorites().row_count()); // keep imports used in all builds
     ui.run()
 }

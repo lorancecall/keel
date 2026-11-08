@@ -92,7 +92,8 @@ fn open_path(p: &Path) { shell(w!("open"), &p.display().to_string(), "", SW_SHOW
 fn open_gui(tab: Option<&str>) {
     let mut c = keel_core::cmd::windowed(exe_beside("keel-gui.exe"));
     if let Some(t) = tab { c.args(["--tab", t]); }
-    let _ = c.spawn();
+    // The menu click gave the tray the foreground: pass it on, or the window opens behind others.
+    if let Ok(child) = c.spawn() { unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(child.id()); } }
 }
 
 /// Left click on the tray icon: opens the panel next to it, or closes it when it is open.

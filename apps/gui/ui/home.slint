@@ -193,6 +193,7 @@ export component HomePage inherits VerticalLayout {
     ScrollView {
         vertical-stretch: 1;
         HorizontalLayout {
+            padding-right: 14px;   // room for the scroll bar: it no longer covers the cards
             spacing: 12px;
 
             // One slot per widget, in the user's order; a hidden widget's slot takes no width.

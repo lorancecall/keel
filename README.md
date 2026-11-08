@@ -54,8 +54,9 @@ and a small amount of RAM working together: one background service, a tray icon 
   driver support is shown.
 - **Adrenalin recovery.** When AMD Adrenalin hangs without a window after a launch, Keel restarts
   it (automatically or from the tray).
-- **GPU apps.** Installed games from Steam, Epic and GOG, each with a switch to run on the eGPU
-  (Windows' per-app GPU choice), plus your own game folders and programs.
+- **GPU apps.** eGPU memory on top, then two tabs. Games: installed games from Steam, Epic and
+  GOG, each with a switch to run on the eGPU (Windows' per-app GPU choice), plus your own game
+  folders and programs, and game mode. Local AI: models, what runs now, AI mode.
 - **Also:** memory history with leak detection, a tray panel, app icon colours, light and dark
   themes, and optional network routing (internet over Wi-Fi or LAN, a side and kill switch per
   VPN, Wi-Fi kept on beside the LAN; any wired adapter, any Windows language). Network routing
@@ -68,7 +69,7 @@ and a small amount of RAM working together: one background service, a tray icon 
 | eGPU monitor is the **main display** | Apps start on the eGPU. Legion Space always opens its windows on the main display and puts them back if moved, so Keel **cannot pin Legion Space to the built-in screen** here; that option is greyed out. Legion Space still runs on the iGPU, and a resolution chosen in it is applied to the built-in screen. |
 | Built-in screen is the **main display**, eGPU monitor extended | Legion Space windows are kept on the built-in screen. Apps you set to the eGPU (GPU apps) still render there. |
 | Built-in screen **off** | Nothing to pin; Legion Space follows the main display. |
-| **No eGPU** | eGPU pages show "not attached", Local AI is off (models would only take system RAM), integer scaling on the built-in screen keeps working. |
+| **No eGPU** | eGPU pages show "not attached", the Local AI tab notes that models would only take system RAM, integer scaling on the built-in screen keeps working. |
 | **Game running** | Integer scaling follows the game's mode (sharp for exact divisors, stretched otherwise) and returns afterwards; Ollama models are unloaded first. |
 | **eGPU unplugged** | Ollama models are unloaded; the other eGPU settings wait for the next attach. |
 | **Switching NVIDIA <-> AMD** | The new card's profile applies; the AMD driver stays bound to the AMD card only. |
