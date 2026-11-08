@@ -145,6 +145,8 @@ pub fn run(icon: (i32, i32, i32, i32)) -> Result<(), slint::PlatformError> {
             let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
             SetWindowLongPtrW(h, GWL_EXSTYLE, (ex | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize));
             let _ = SetForegroundWindow(h);
+            let w = f.as_weak();
+            crate::redraw::watch(h, move || if let Some(f) = w.upgrade() { f.set_repaint(f.get_repaint().wrapping_add(1)); });
         }
     }
     // Refresh while open; close when another window takes the focus.
@@ -166,7 +168,10 @@ pub fn run(icon: (i32, i32, i32, i32)) -> Result<(), slint::PlatformError> {
                 placed = now;
                 let (x, y) = place(icon, (now.width as i32, now.height as i32), work_area((icon.0, icon.1)));
                 f.window().set_position(slint::PhysicalPosition::new(x, y));
+                f.set_repaint(f.get_repaint().wrapping_add(1));
             }
+            // And once more after it settled (moves and DPI changes come in late).
+            if matches!(n, 2 | 6 | 12) { f.set_repaint(f.get_repaint().wrapping_add(1)); }
             if n % 8 == 0 { memory(&f); egpu(&f); }
             if n % 40 == 0 { network(&f); display_rows(&f); }
         });

@@ -26,6 +26,7 @@ mod displays;
 mod home;
 mod localai;
 mod memhistory;
+mod redraw;
 mod stress;
 
 thread_local! {
@@ -988,7 +989,16 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
     }
-    slint::Timer::single_shot(std::time::Duration::from_millis(200), || { set_window_icon(); bring_to_front(); });
+    {
+        let w = ui.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(200), move || {
+            set_window_icon();
+            if let Some(h) = own_window() {
+                redraw::watch(h, move || if let Some(ui) = w.upgrade() { ui.set_repaint(ui.get_repaint().wrapping_add(1)); });
+            }
+            bring_to_front();
+        });
+    }
     if ui.get_page() == ui.global::<Pages>().get_memory_history() { ui.global::<MemHistData>().invoke_reload(); }
     if ui.get_page() == ui.global::<Pages>().get_displays() { ui.global::<DisplaysData>().invoke_refresh(); }
     if ui.get_page() == ui.global::<Pages>().get_games() { ui.global::<GamesData>().invoke_refresh(); ui.global::<LocalAiData>().invoke_refresh(); }

@@ -36,6 +36,7 @@ export component Flyout inherits Window {
     width: 330px;
     background: Palette.background;
     in property <int> force-scheme;
+    in property <int> repaint;
     changed force-scheme => {
         if (root.force-scheme == 1) { Palette.color-scheme = ColorScheme.dark; }
         if (root.force-scheme == 2) { Palette.color-scheme = ColorScheme.light; }
@@ -103,4 +104,8 @@ export component Flyout inherits Window {
             }
         }
     }
+
+    // Bumped by src/flyout.rs to redraw the whole panel (it grows after it is shown, and the
+    // software renderer left the new part unpainted): practically invisible, marks it all dirty.
+    Rectangle { background: Math.mod(root.repaint, 2) == 1 ? #00000001 : #00000000; }
 }

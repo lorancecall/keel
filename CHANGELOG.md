@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.41
+
+- The main window and the tray panel redraw themselves fully the moment they move, come to the
+  front, change DPI or see a display change (a subclass on their window messages). Before, the
+  check ran every 2 s, so after a move between monitors parts showed an older page or the
+  desktop for a while; the panel's grown part stayed blank at 200 % scale.
+
 ## 0.1.40
 
 - A game set to the eGPU that opens on another screen (the built-in one, when it is the main
