@@ -363,12 +363,13 @@ fn running_exes() -> Vec<String> {
     procs::snapshot().unwrap_or_default().iter().filter_map(|p| procs::image_path(p.pid, &devmap).0).map(|p| p.to_lowercase()).collect()
 }
 
-/// Enabled Run-key and Startup-folder apps that run now: (exe, command line).
+/// Run-key and Startup-folder apps that run now: (exe, command line). Disabled items count too:
+/// On-demand apps switches a followed app's startup item off while it runs.
 fn startup_apps_running() -> Vec<(String, String)> {
     use keel_ram::sources;
     let now = running_exes();
     let mut out: Vec<(String, String)> = sources::run_entries().into_iter().chain(sources::startup_entries())
-        .filter(|l| l.kind != "runonce" && l.enabled != Some(false))
+        .filter(|l| l.kind != "runonce")
         .filter_map(|l| l.exe.map(|e| (e.to_lowercase(), l.command)))
         .filter(|(e, _)| now.contains(e)).collect();
     out.sort();

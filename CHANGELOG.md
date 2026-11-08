@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.35
+
+- AI / game mode also starts again a startup app whose startup item is off (On-demand apps
+  turns a followed app's item off while it runs, e.g. OneDrive).
+
 ## 0.1.34
 
 - Game mode: app families picked on the Apps page (Game mode box) are switched off while a game
