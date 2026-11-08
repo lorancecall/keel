@@ -356,6 +356,10 @@ pub struct State {
     /// waiting to settle.
     int_game_seen: Option<(u64, bool, DisplayKey)>,
     int_game_wait: Option<((u64, bool, DisplayKey), Instant)>,
+    /// Game windows already moved to the eGPU monitor (each once; cleared when no game runs).
+    game_moved: Vec<isize>,
+    /// When the current game was first reported (Legion Space is sent back for a while after).
+    game_started: Option<Instant>,
     /// eGPU displays the full-screen window fit last ran for (None while a game runs), and a
     /// newer state waiting to settle.
     fit_seen: Option<DisplayKey>,
@@ -668,6 +672,31 @@ const FIT_SETTLE: Duration = Duration::from_secs(3);
 /// 2560x1440 after a game switched the desktop to 1440 and back) are put back to the eGPU
 /// monitor's current size (`display::fit_target`). Runs once per settled change of the eGPU
 /// displays and after each game, never while a game runs (its own window is the game's).
+/// A game set to the eGPU (Windows' per-app GPU choice) renders there but opens on the main
+/// display; when that is another screen (the built-in one), each of its windows is moved once to
+/// the first eGPU monitor. Once: a game that moves itself back keeps its choice (no fight).
+fn game_to_egpu(st: &mut State, key: &DisplayKey) {
+    let Some(exe) = st.game_exe.clone().filter(|_| st.prefs.game_to_egpu_screen) else { st.game_moved.clear(); return };
+    let Some((target, monitor, _)) = key.first() else { return };
+    if !keel_egpu::gpupref::is_high_performance(&exe) { return; }
+    for (hwnd, gdi) in display::exe_windows(&exe) {
+        if st.game_moved.contains(&hwnd) || key.iter().any(|(g, _, _)| g.eq_ignore_ascii_case(&gdi)) { continue; }
+        st.game_moved.push(hwnd);
+        let ok = display::move_window(hwnd, &gdi, target);
+        tray_log(&format!("game: window of {} moved from {gdi} to {monitor} (eGPU){}", exe.rsplit('\\').next().unwrap_or(&exe), if ok { "" } else { ": failed" }));
+    }
+}
+
+/// Legion Space opens its own screen when a game starts; for this long after a game was first
+/// reported, a Legion Space window in front is minimized so the game keeps the screen. Later ones
+/// (the Legion button pressed in the game) are left alone.
+const LEGION_HIDE_FOR: Duration = Duration::from_secs(20);
+
+fn game_hide_legion(st: &mut State) {
+    if !st.prefs.game_hide_legion || !st.game_started.is_some_and(|t| t.elapsed() < LEGION_HIDE_FOR) { return; }
+    if legion::minimize_if_foreground() { tray_log("game: Legion Space came to the front as the game started; minimized"); }
+}
+
 fn fit_windows(st: &mut State, key: &DisplayKey) {
     if st.game_active { st.fit_seen = None; st.fit_wait = None; return; }
     if key.is_empty() || st.fit_seen.as_ref() == Some(key) { return; }
@@ -775,6 +804,7 @@ pub fn refresh(ui: &Ui, st: &mut State, cfg: &Config) {
     ui.info_egpu.set_text(&egpu_text);
     ui.info_tel.set_text(if tel_text.is_empty() { " " } else { &tel_text });
     ui.info_game.set_text(&game_text);
+    if s.game_exe.is_some() != st.game_exe.is_some() { st.game_started = s.game_exe.is_some().then(Instant::now); }
     st.game_exe = s.game_exe.clone();
     ui.pin_game.set_enabled(st.game_exe.is_some());
 
@@ -822,6 +852,8 @@ pub fn refresh(ui: &Ui, st: &mut State, cfg: &Config) {
     let key = egpu_displays(egpu.filter(|_| alive).map(|a| a.luid).filter(|l| *l != 0));
     int_game(st, egpu.filter(|_| alive).map(|a| a.luid).filter(|l| *l != 0), s.game.as_deref(), &key);
     fit_windows(st, &key);
+    game_to_egpu(st, &key);
+    game_hide_legion(st);
     if st.display_key.as_ref() != Some(&key) {
         let ours = st.own_change_until.is_some_and(|t| Instant::now() < t);
         // A running game changes the eGPU monitor's mode itself: never take that for Legion Space's.
@@ -959,7 +991,7 @@ impl State {
                 mode_items: HashMap::new(), int_items: HashMap::new(), egpu_profile: None, int_seen: None, search_restart_at: None,
                 own_change_until: None, legion_seen: None, pending: None, primary_seen: None, amd_egpu: None,
                 icon_prune_at: Some(Instant::now() + ICON_PRUNE_DELAY), game_last_seen: None, game_active: false,
-                int_game_seen: None, int_game_wait: None, fit_seen: None, fit_wait: None }
+                int_game_seen: None, int_game_wait: None, game_moved: Vec::new(), game_started: None, fit_seen: None, fit_wait: None }
     }
 
     fn save_mem(&self) { if let Err(e) = self.mem.save() { tray_log(&format!("tray-state.toml: {e:#}")); } }

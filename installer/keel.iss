@@ -1,5 +1,5 @@
 ﻿; Inno Setup script - build:  .\build.ps1  (cargo build --release, cargo test, then ISCC.exe installer\keel.iss)
-#define AppVersion "0.1.39"
+#define AppVersion "0.1.40"
 
 [Setup]
 AppId={{444DB70A-6E16-45C8-8959-7F2B3EA77C67}

@@ -29,6 +29,8 @@ export global GamesData {
     in-out property <bool> game-mode;
     in property <[string]> game-apps;
     in-out property <bool> game-one-display;
+    in-out property <bool> game-to-egpu-screen;
+    in-out property <bool> game-hide-legion;
     callback game-mode-changed();
     callback refresh();
     callback scan();
@@ -156,6 +158,16 @@ export component GamesPage inherits VerticalLayout {
                             }
                             if GamesData.show-games : VerticalLayout { spacing: 6px;
                                 Text { text: "eGPU on: Windows starts the game on the eGPU from its next start."; font-size: 12px; color: Tone.muted; }
+                                CheckBox {
+                                    text: "Open games set to the eGPU on the eGPU monitor (moved there when they open on another screen)";
+                                    checked <=> GamesData.game-to-egpu-screen;
+                                    toggled => { GamesData.game-mode-changed(); }
+                                }
+                                CheckBox {
+                                    text: "Send Legion Space back when it comes to the front as a game starts (first 20 s)";
+                                    checked <=> GamesData.game-hide-legion;
+                                    toggled => { GamesData.game-mode-changed(); }
+                                }
                                 for g[i] in GamesData.installed : Row {
                                     first: i == 0; text: g.name; sub: g.path; tag: g.source;
                                     Switch { checked: g.egpu; text: "eGPU"; toggled => { GamesData.set-egpu(i, self.checked); } }

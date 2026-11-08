@@ -386,6 +386,51 @@ pub fn restore_layout() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Visible top-level windows (at least 320 x 240, not tool windows) of the process running `exe`
+/// (full path, any case), with the GDI name of the monitor each is on.
+pub fn exe_windows(exe: &str) -> Vec<(isize, String)> {
+    use windows::Win32::Foundation::{CloseHandle, HWND};
+    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    struct Ctx<'a> { exe: &'a str, out: Vec<(isize, String)> }
+    unsafe extern "system" fn each(hwnd: HWND, data: LPARAM) -> BOOL {
+        let c = unsafe { &mut *(data.0 as *mut Ctx) };
+        unsafe {
+            if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() { return BOOL(1); }
+            if GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0 { return BOOL(1); }
+            let mut r = RECT::default();
+            if GetWindowRect(hwnd, &mut r).is_err() || w(&r) < 320 || h(&r) < 240 { return BOOL(1); }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            let Ok(p) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return BOOL(1) };
+            let mut buf = [0u16; 520];
+            let mut n = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(p, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut n).is_ok();
+            let _ = CloseHandle(p);
+            if !ok || !String::from_utf16_lossy(&buf[..n as usize]).eq_ignore_ascii_case(c.exe) { return BOOL(1); }
+            if let Some((gdi, _)) = monitor_info(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)) { c.out.push((hwnd.0 as isize, gdi)); }
+        }
+        BOOL(1)
+    }
+    let mut c = Ctx { exe, out: Vec::new() };
+    unsafe { let _ = EnumWindows(Some(each), LPARAM(&mut c as *mut _ as isize)); }
+    c.out
+}
+
+/// Moves a window from monitor `from` onto monitor `to` (`place`: full-screen windows take the
+/// whole target, others keep their size and relative position), without activating it.
+pub fn move_window(hwnd: isize, from: &str, to: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    let (Some(f), Some(t)) = (monitor_by_name(from), monitor_by_name(to)) else { return false };
+    let win = windows::Win32::Foundation::HWND(hwnd as _);
+    let mut r = RECT::default();
+    unsafe {
+        if GetWindowRect(win, &mut r).is_err() { return false; }
+        let to = place(r, &f, &t);
+        SetWindowPos(win, None, to.left, to.top, w(&to), h(&to), SWP_NOZORDER | SWP_NOACTIVATE).is_ok()
+    }
+}
+
 /// Full-screen window left at another resolution of this monitor: it sits at the monitor's
 /// top-left and is exactly the size of one of the monitor's other modes (Steam Big Picture stayed
 /// 2560x1440 after a game switched the desktop to 1440 and back to 1080). Returns the monitor's

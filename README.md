@@ -57,7 +57,8 @@ and a small amount of RAM working together: one background service, a tray icon 
   it (automatically or from the tray).
 - **GPU apps.** eGPU memory on top, then two tabs. Games: installed games from Steam, Epic and
   GOG, each with a switch to run on the eGPU (Windows' per-app GPU choice), plus your own game
-  folders and programs, and game mode. Local AI: models, what runs now, AI mode.
+  folders and programs, and game mode. A game set to the eGPU opens on the eGPU monitor,
+  and Legion Space popping up as a game starts is sent back. Local AI: models, what runs now, AI mode.
 - **Also:** memory history with leak detection, a tray panel, app icon colours, light and dark
   themes, and optional network routing (internet over Wi-Fi or LAN, a side and kill switch per
   VPN, Wi-Fi kept on beside the LAN; any wired adapter, any Windows language). Network routing

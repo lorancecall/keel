@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.40
+
+- A game set to the eGPU that opens on another screen (the built-in one, when it is the main
+  display) has its window moved to the eGPU monitor, once per window (GPU apps > Games, on by
+  default).
+- Legion Space coming to the front within 20 s of a game starting is minimized, so the game
+  keeps the screen (GPU apps > Games, on by default). Legion Space's own settings are untouched.
+
 ## 0.1.39
 
 - "Make main display" works again on an AMD eGPU monitor with integer scaling on: the main

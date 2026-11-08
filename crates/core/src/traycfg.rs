@@ -68,6 +68,10 @@ pub struct Prefs {
     pub game_mode_apps: Vec<AiApp>,
     /// Game mode also turns every display but the main one off while the game runs.
     pub game_one_display: bool,
+    /// A game set to the eGPU that opens on another display is moved to the eGPU monitor.
+    pub game_to_egpu_screen: bool,
+    /// Legion Space coming to the front right after a game starts is minimized (the game keeps the screen).
+    pub game_hide_legion: bool,
     /// Home widget order ("memory", "egpu", "network"); empty: the default order.
     pub home_order: Vec<String>,
     /// External GPU page: the Tuning section above Live.
@@ -85,7 +89,7 @@ impl Default for Prefs {
         Self { favorites: default_favorites(), legion_space_pin: false, prune_amd_tray_icons: true, egpu_primary_display: false,
                restart_search_after_scaling: true, notifications: true, side_menu: 0, hidden_widgets: Vec::new(),
                keep_memory_history: false, fast_samples: false, home_order: Vec::new(), egpu_tuning_first: false, ai_mode: false, ai_mode_apps: Vec::new(),
-               game_mode: false, game_mode_apps: Vec::new(), game_one_display: false,
+               game_mode: false, game_mode_apps: Vec::new(), game_one_display: false, game_to_egpu_screen: true, game_hide_legion: true,
                icon_color: String::new(), icon_style: 0, tray_icon_color: false, watched: Vec::new(), ignored: Vec::new() }
     }
 }

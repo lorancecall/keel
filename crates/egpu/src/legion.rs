@@ -233,6 +233,15 @@ pub fn pin_window(hwnd: HWND, internal: &Monitor) -> Pin {
     }
 }
 
+/// The foreground window when it is Legion Space's: minimized, so the window behind it (the game)
+/// gets the screen back. True when it minimized one.
+pub fn minimize_if_foreground() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, ShowWindowAsync, SW_MINIMIZE};
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.0.is_null() || !is_legion_window(fg) { return false; }
+    unsafe { ShowWindowAsync(fg, SW_MINIMIZE) }.as_bool()
+}
+
 /// True while a large Legion Space window is on screen: visible, or the quick menu's layered
 /// overlay faded in (it never sets WS_VISIBLE).
 pub fn in_use() -> bool {
