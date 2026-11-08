@@ -36,7 +36,8 @@ and a small amount of RAM working together: one background service, a tray icon 
 - **Resolution and integer scaling on every screen.** For eGPU monitors (NVIDIA and AMD) and the
   built-in screen (through the iGPU driver): pick an exact divisor such as 1920 x 1080 on a 4K
   monitor or 1280 x 800 on the 2560 x 1600 panel and every pixel stays sharp. While a game runs,
-  integer scaling follows the game's own mode and comes back when it exits. Mode changes ask to
+  integer scaling follows the game's own mode on NVIDIA and comes back when it exits (AMD applies
+  scaling only at a mode change, so there it stays as it is: run the game at an exact divisor). Mode changes ask to
   keep them and revert after 15 seconds.
 - **Local AI that behaves on an eGPU.** Shows how much eGPU memory is free, which installed
   Ollama models fit in it and which would spill into system RAM, and what is loaded now (GPU vs
@@ -70,7 +71,7 @@ and a small amount of RAM working together: one background service, a tray icon 
 | Built-in screen is the **main display**, eGPU monitor extended | Legion Space windows are kept on the built-in screen. Apps you set to the eGPU (GPU apps) still render there. |
 | Built-in screen **off** | Nothing to pin; Legion Space follows the main display. |
 | **No eGPU** | eGPU pages show "not attached", the Local AI tab notes that models would only take system RAM, integer scaling on the built-in screen keeps working. |
-| **Game running** | Integer scaling follows the game's mode (sharp for exact divisors, stretched otherwise) and returns afterwards; Ollama models are unloaded first. |
+| **Game running** | On NVIDIA, integer scaling follows the game's mode (sharp for exact divisors, stretched otherwise) and returns afterwards; on AMD it stays as set (pick an exact divisor in the game); Ollama models are unloaded first. |
 | **eGPU unplugged** | Ollama models are unloaded; the other eGPU settings wait for the next attach. |
 | **Switching NVIDIA <-> AMD** | The new card's profile applies; the AMD driver stays bound to the AMD card only. |
 

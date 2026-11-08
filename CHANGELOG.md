@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.37
+
+- Game mode can also keep the main display only: the other displays are turned off while a game
+  runs and Windows' saved layout comes back when it exits (GPU apps > Games > Game mode). The
+  change is not saved in Windows' display settings, so a crash or sign-out leaves the normal
+  layout; a marker file lets the tray put it back after a restart.
+- Integer scaling can no longer be switched from the tray menu or the panel while a game runs.
+  Turning it off put the desktop mode back under the running game, whose mouse then mapped to
+  the wrong size.
+- AMD: integer scaling is left as it is while a game runs. The driver applies a scaling change
+  only at the next mode change, so following the game's mode did nothing visible (a 1440p game
+  stayed small in black borders on a 4K monitor) and the display re-init upset the game's mouse.
+  Run games at an exact divisor of the native mode (1080p on 4K) for a sharp full screen, or
+  switch integer scaling off before starting a game at another size. NVIDIA keeps following.
+
 ## 0.1.36
 
 - Local AI is now a tab of GPU apps: eGPU memory stays on top, with Games and Local AI tabs

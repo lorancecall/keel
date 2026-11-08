@@ -59,6 +59,7 @@ pub fn refresh(ui: &MainWindow) {
     let cfg = keel_egpu::config::Config::load();
     let p = keel_core::traycfg::Prefs::load();
     d.set_game_mode(p.game_mode);
+    d.set_game_one_display(p.game_one_display);
     d.set_game_apps(ModelRc::new(VecModel::from(p.game_mode_apps.iter().map(|a| SharedString::from(a.name.as_str())).collect::<Vec<_>>())));
     match running() {
         Some((name, path)) => {
@@ -151,6 +152,7 @@ pub fn wire(ui: &MainWindow) {
     d.on_game_mode_changed(move || if let Some(ui) = w.upgrade() {
         let mut p = keel_core::traycfg::Prefs::load();
         p.game_mode = ui.global::<GamesData>().get_game_mode();
+        p.game_one_display = ui.global::<GamesData>().get_game_one_display();
         ui.global::<GamesData>().set_result(match p.save() {
             Ok(()) => if p.game_mode { "Game mode on".into() } else { "Game mode off".into() },
             Err(e) => format!("{e:#}").into(),

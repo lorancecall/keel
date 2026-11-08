@@ -278,6 +278,36 @@ fn ask_ai(tx: &Sender<Done>, ai_on: bool, game_on: bool) {
     });
 }
 
+/// `%LOCALAPPDATA%\keel\game-display.on`: game mode turned the other displays off. Written before
+/// the change, so a tray restart or crash still puts the layout back.
+fn one_display_marker() -> PathBuf { keel_core::paths::user_data_dir().join("game-display.on") }
+
+/// Game mode, main display only: turns the other displays off while `want`, back when not
+/// (Windows' saved layout). One change at a time, on a worker thread.
+fn game_display(tx: &Sender<Done>, want: bool) {
+    static BUSY: AtomicBool = AtomicBool::new(false);
+    let marker = one_display_marker();
+    if want == marker.exists() || BUSY.swap(true, Ordering::SeqCst) { return; }
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let m = if want {
+            if let Some(d) = marker.parent() { let _ = std::fs::create_dir_all(d); }
+            let _ = std::fs::write(&marker, b"");
+            match keel_egpu::display::main_display_only() {
+                Ok(off) if off.is_empty() => { let _ = std::fs::remove_file(&marker); None }
+                Ok(off) => Some(format!("game mode: main display only, turned off {}", off.join(", "))),
+                Err(e) => Some(format!("game mode: main display only: {e:#}")),
+            }
+        } else {
+            let r = keel_egpu::display::restore_layout();
+            let _ = std::fs::remove_file(&marker);
+            Some(match r { Ok(()) => "game mode: displays back".to_string(), Err(e) => format!("game mode: displays back: {e:#}") })
+        };
+        if let Some(m) = m { let _ = tx.send(Done::AiLog(m)); }
+        BUSY.store(false, Ordering::SeqCst);
+    });
+}
+
 /// Families AI mode and game mode want off now (keys, each once). Pure; tested.
 fn modes_chosen(ai: Option<&[traycfg::AiApp]>, game: Option<&[traycfg::AiApp]>) -> Vec<String> {
     let mut v: Vec<String> = Vec::new();
@@ -519,6 +549,7 @@ fn main() -> anyhow::Result<()> {
                 // Plans made while earlier changes still run would repeat them.
                 Done::Ai(..) if ai_busy.load(Ordering::SeqCst) => {}
                 Done::Ai(loaded, game, entries) => {
+                    game_display(&tx, game && st.prefs.game_one_display);
                     let chosen = modes_chosen(loaded.then_some(&st.prefs.ai_mode_apps[..]), game.then_some(&st.prefs.game_mode_apps[..]));
                     let active = !chosen.is_empty();
                     if !active { ai_failed.clear(); }
@@ -546,7 +577,7 @@ fn main() -> anyhow::Result<()> {
         if ticks % 5 == 0 { ram = memory_line(); ui.ram_line.set_text(&ram); }
         if ticks % 10 == 0 { net = net_line(); ui.net_line.set_text(&net); }
         // AI mode on, or families it switched off still to put back (also after a reboot).
-        if ticks % 10 == 5 && (st.prefs.ai_mode || st.prefs.game_mode || ai_pending) { ask_ai(&tx, st.prefs.ai_mode, st.prefs.game_mode); }
+        if ticks % 10 == 5 && (st.prefs.ai_mode || st.prefs.game_mode || ai_pending || one_display_marker().exists()) { ask_ai(&tx, st.prefs.ai_mode, st.prefs.game_mode); }
         if ticks % 30 == 0 {
             if st.prefs.has("ram.ondemand") { ask_ondemand(&tx, None); }
             if st.prefs.has("net.internet") { ui.set_internet(); }

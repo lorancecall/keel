@@ -322,6 +322,53 @@ pub fn set_primary(target: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Which active paths stay on for "main display only": those whose desktop starts at (0, 0)
+/// (the primary and its clones). `None` when no path is the primary or nothing would go off. Pure.
+pub fn keep_primary(origins: &[Option<(i32, i32)>]) -> Option<Vec<bool>> {
+    let keep: Vec<bool> = origins.iter().map(|o| *o == Some((0, 0))).collect();
+    (keep.iter().any(|k| *k) && keep.iter().any(|k| !*k)).then_some(keep)
+}
+
+/// Turns every display but the main one off for now (game mode). Not saved in Windows' display
+/// database, so `restore_layout` (or the next sign-in) brings the user's own layout back.
+/// Returns the monitor names turned off (empty: one display already).
+pub fn main_display_only() -> anyhow::Result<Vec<String>> {
+    unsafe {
+        let (mut np, mut nm) = (0u32, 0u32);
+        GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).ok()?;
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+        QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut np, paths.as_mut_ptr(), &mut nm, modes.as_mut_ptr(), None).ok()?;
+        paths.truncate(np as usize);
+        modes.truncate(nm as usize);
+        let origins: Vec<Option<(i32, i32)>> = paths.iter().map(|p| {
+            let m = modes.get(p.sourceInfo.Anonymous.modeInfoIdx as usize)?;
+            (m.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE).then(|| (m.Anonymous.sourceMode.position.x, m.Anonymous.sourceMode.position.y))
+        }).collect();
+        let Some(keep) = keep_primary(&origins) else { return Ok(Vec::new()) };
+        let off: Vec<String> = paths.iter().zip(&keep).filter(|(_, k)| !**k).map(|(p, _)| {
+            let mut t = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
+            t.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+            t.header.size = std::mem::size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
+            t.header.adapterId = p.targetInfo.adapterId;
+            t.header.id = p.targetInfo.id;
+            let n = if DisplayConfigGetDeviceInfo(&mut t.header) == 0 { utf16(&t.monitorFriendlyDeviceName) } else { String::new() };
+            if !n.is_empty() { n } else if is_internal(p.targetInfo.outputTechnology) { "built-in screen".into() } else { format!("display {}", p.targetInfo.id) }
+        }).collect();
+        let kept: Vec<DISPLAYCONFIG_PATH_INFO> = paths.iter().zip(&keep).filter(|(_, k)| **k).map(|(p, _)| *p).collect();
+        let r = SetDisplayConfig(Some(&kept), Some(&modes), SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES);
+        anyhow::ensure!(r == 0, "SetDisplayConfig returned {r}");
+        Ok(off)
+    }
+}
+
+/// Puts back the layout Windows has saved for the connected monitors (the user's own one).
+pub fn restore_layout() -> anyhow::Result<()> {
+    let r = unsafe { SetDisplayConfig(None, None, SDC_APPLY | SDC_USE_DATABASE_CURRENT) };
+    anyhow::ensure!(r == 0, "SetDisplayConfig (saved layout) returned {r}");
+    Ok(())
+}
+
 /// Full-screen window left at another resolution of this monitor: it sits at the monitor's
 /// top-left and is exactly the size of one of the monitor's other modes (Steam Big Picture stayed
 /// 2560x1440 after a game switched the desktop to 1440 and back to 1080). Returns the monitor's
@@ -394,6 +441,14 @@ mod tests {
         // A second monitor to the right: its own origin counts.
         let right = r(1920, 0, 3840, 1080);
         assert_eq!(fit_target(r(1920, 0, 4480, 1440), right, &sizes), Some(right));
+    }
+
+    #[test]
+    fn main_display_only_keeps_the_primary_and_its_clones() {
+        assert_eq!(keep_primary(&[Some((0, 0)), Some((1920, 0))]), Some(vec![true, false]));
+        assert_eq!(keep_primary(&[Some((-2560, 274)), Some((0, 0)), Some((0, 0))]), Some(vec![false, true, true]));
+        assert_eq!(keep_primary(&[Some((0, 0))]), None, "one display: nothing to do");
+        assert_eq!(keep_primary(&[Some((10, 0)), None]), None, "no primary found: leave it");
     }
 
     fn p(n: &str, x: i32, y: i32) -> (String, i32, i32) { (n.into(), x, y) }

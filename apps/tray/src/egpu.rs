@@ -605,6 +605,14 @@ fn int_game(st: &mut State, egpu_luid: Option<u64>, game: Option<&str>, key: &Di
     st.int_game_wait = None;
     let active = st.game_active;
     st.int_game_seen = Some(sig);
+    // AMD applies a scaling change only at the next mode change: switched under a running game it
+    // did nothing visible (1440p stayed small in black borders) and the display re-init upset the
+    // game's mouse. Leave AMD scaling as it is while a game runs (run games at an exact divisor,
+    // e.g. 1080p on 4K, for a sharp full screen).
+    if active && p.vendor_id == keel_egpu::gpu::VENDOR_AMD && st.mem.int_game_handover.is_empty() {
+        int_log(&[format!("game running ({}): AMD integer scaling left as it is until it exits", game.unwrap_or("?"))]);
+        return;
+    }
     let recs = intscale::load();
     let before = st.mem.int_game_handover.clone();
     st.mem.int_game_handover.retain(|m| recs.iter().any(|r| r.monitor == *m));
@@ -860,8 +868,10 @@ fn gui_request(st: &mut State) {
         "integer" => {
             let on_now = intscale::load().iter().any(|x| x.monitor == r.monitor);
             if r.on == on_now { return; }
-            if !r.on { int_off(st, &r.monitor, None); }
-            else if st.game_active { notify("A game is running: switch integer scaling on after it exits."); }
+            // Turning it off puts the desktop mode back, under the running game (its mouse then
+            // maps to the wrong size); the game hand-over already follows the game's mode.
+            if st.game_active { notify("A game is running: integer scaling follows the game now; switch it after the game exits."); }
+            else if !r.on { int_off(st, &r.monitor, None); }
             else if st.egpu_profile.is_none() || !egpu_displays(st.int_seen.map(|(l, _)| l)).iter().any(|(_, m, _)| *m == r.monitor) {
                 notify("Integer scaling here works on eGPU monitors; the built-in screen has its own switch in the main window.");
             }
@@ -876,9 +886,10 @@ fn gui_request(st: &mut State) {
 pub fn handle(ui: &Ui, st: &mut State, cfg: &Config, id: &MenuId) -> bool {
     if let Some((gdi, monitor)) = st.int_items.get(id).cloned() {
         if st.pending.is_none() {
-            if intscale::load().iter().any(|r| r.monitor == monitor) { int_off(st, &monitor, None); }
-            // It would record the game's mode as the one to go back to and fight its mode changes.
-            else if st.game_active { notify("A game is running: switch integer scaling on after it exits."); }
+            // On: it would record the game's mode as the one to go back to and fight its mode
+            // changes. Off: the desktop mode would change under the game (mouse mapped wrong).
+            if st.game_active { notify("A game is running: integer scaling follows the game now; switch it after the game exits."); }
+            else if intscale::load().iter().any(|r| r.monitor == monitor) { int_off(st, &monitor, None); }
             else { int_on(st, &gdi, &monitor); }
         }
         st.display_key = None;

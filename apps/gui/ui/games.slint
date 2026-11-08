@@ -2,7 +2,7 @@
 // now, game mode, the installed games found by a scan (each with an eGPU switch), other programs set
 // to the eGPU (folded), and what counts as a game (folders, program names). Local AI: localai.slint.
 // Data from src/games.rs via GamesData (and src/localai.rs via LocalAiData).
-import { Button, ScrollView, Switch, Palette, TabWidget } from "std-widgets.slint";
+import { Button, CheckBox, ScrollView, Switch, Palette, TabWidget } from "std-widgets.slint";
 import { VramCard, LocalAiTab, LocalAiData } from "localai.slint";
 
 export struct GameApp { name: string, path: string }
@@ -28,6 +28,7 @@ export global GamesData {
     // Game mode: app families (picked on the Apps page) switched off while a game runs.
     in-out property <bool> game-mode;
     in property <[string]> game-apps;
+    in-out property <bool> game-one-display;
     callback game-mode-changed();
     callback refresh();
     callback scan();
@@ -136,6 +137,12 @@ export component GamesPage inherits VerticalLayout {
                             Text { text: "While a game runs (on the eGPU or the built-in GPU), these apps are switched off; they come back when it exits."; font-size: 12px; color: Tone.muted; wrap: word-wrap; }
                             if GamesData.game-apps.length == 0 : Text { text: "No apps yet: pick them on the Apps page (Game mode box)."; wrap: word-wrap; }
                             for a[i] in GamesData.game-apps : Row { first: i == 0; text: a; }
+                            CheckBox {
+                                text: "Main display only: turn the other displays off while the game runs";
+                                checked <=> GamesData.game-one-display;
+                                toggled => { GamesData.game-mode-changed(); }
+                            }
+                            Text { text: "Your own layout comes back when the game exits. The switch happens a few seconds after the game starts."; font-size: 12px; color: Tone.muted; wrap: word-wrap; }
                         }
                     }
 
