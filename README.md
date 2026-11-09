@@ -9,7 +9,7 @@
 
 A Windows companion for **eGPU users on handheld PCs**, built on and for the Lenovo Legion Go
 (Ryzen Z1 Extreme). Keel keeps an NVIDIA or AMD external GPU, the built-in screen, Legion Space
-and a small amount of RAM working together: one background service, a tray icon and a main window.
+and a small amount of RAM working together: one service, a tray icon and a main window.
 
 <p>
   <img src="docs/screenshots/external-gpu.png" width="49%" alt="External GPU page: live power, temperature and clock history, gauges, stress test">
@@ -21,99 +21,78 @@ and a small amount of RAM working together: one background service, a tray icon 
 
 ## What it does
 
-- **NVIDIA and AMD eGPUs, without DDU.** An AMD eGPU gets its own driver, installed on that
-  device only (matched by its exact hardware ID), so the handheld's iGPU keeps the vendor driver.
-  Windows Update is kept from replacing the eGPU driver. No Display Driver Uninstaller, no
-  reinstalling the iGPU driver after every eGPU driver update.
-- **Switch between eGPUs.** Any eGPU Windows reports as removable (USB4, Thunderbolt, OCuLink dock)
-  gets its own profile on first attach, starting at the driver defaults; limits and scaling records
-  are kept per GPU. Plug an NVIDIA
-  card in after an AMD one, or back, and Keel picks up the right one. NVIDIA's helper services can
-  be stopped while no NVIDIA GPU is present (opt-in) and come back when one is.
+- **NVIDIA and AMD eGPUs, without DDU.** An AMD eGPU gets its own driver, bound to its exact
+  hardware ID, so the iGPU keeps the vendor driver; Windows Update is kept from replacing it.
+  Each removable eGPU (USB4, Thunderbolt, OCuLink) has its own profile, starting at the driver
+  defaults. NVIDIA's helper services can be stopped while no NVIDIA GPU is present (opt-in).
 - **Legion Space and the eGPU get along.** Two options (External GPU page, tray menu):
-  *Legion Space on iGPU* keeps it on the iGPU and sends a resolution picked in Legion Space to the
-  built-in screen instead of the eGPU monitor, whichever display is the main one. *Legion Space on
-  built-in screen* keeps its windows on the built-in screen, which works only while that is the
-  main display (see [Scenarios](#scenarios)).
-- **Resolution and integer scaling on every screen.** For eGPU monitors (NVIDIA and AMD) and the
-  built-in screen (through the iGPU driver): pick an exact divisor such as 1920 x 1080 on a 4K
-  monitor or 1280 x 800 on the 2560 x 1600 panel and every pixel stays sharp. While a game runs,
-  integer scaling follows the game's own mode on NVIDIA and comes back when it exits (AMD applies
-  scaling only at a mode change, so there it stays as it is: run the game at an exact divisor). Mode changes ask to
-  keep them and revert after 15 seconds.
-- **Local AI that behaves on an eGPU.** Shows how much eGPU memory is free, which installed
-  Ollama models fit in it and which would spill into system RAM, and what is loaded now (GPU vs
-  RAM split, unload, end Ollama). Models are unloaded when a game starts and when the eGPU is
-  unplugged. AI mode switches apps you pick off while a model is loaded; game mode does the same
-  while a game runs (on any GPU).
-- **On-demand apps.** Apps leave helpers behind: services, scheduled tasks, startup entries,
-  updaters. Keel groups them by vendor and install folder into *families* and keeps a family off
-  until you use it: "Keep off", or "Follow app" (on while the app runs, off again after it exits).
-  Everything is recorded before it is switched and put back when you choose "Back to normal" or
-  uninstall Keel.
-- **Simple eGPU tuning.** Live power, temperature, clocks, usage and VRAM; power limit and clock
-  ceilings on NVIDIA, NVIDIA 3D settings, Radeon features (and power / clock tuning where the AMD
-  driver offers it); a short stress test to find the card's real peaks. Only what the card and
-  driver support is shown.
-- **Adrenalin recovery.** When AMD Adrenalin hangs without a window after a launch, Keel restarts
-  it (automatically or from the tray).
-- **GPU apps.** eGPU memory on top, then two tabs. Games: installed games from Steam, Epic and
-  GOG, each with a switch to run on the eGPU (Windows' per-app GPU choice), plus your own game
-  folders and programs, and game mode. A game set to the eGPU opens on the eGPU monitor,
-  and Legion Space popping up as a game starts is sent back. Local AI: models, what runs now, AI mode.
-- **Also:** memory history with leak detection, a tray panel, app icon colours, light and dark
-  themes, and optional network routing (internet over Wi-Fi or LAN, a side and kill switch per
-  VPN, Wi-Fi kept on beside the LAN; any wired adapter, any Windows language). Network routing
-  is off until you set it up.
+  *Legion Space on iGPU* runs it on the iGPU and sends a resolution picked in it to the built-in
+  screen; works with any main display. *Legion Space on built-in screen* keeps its windows there;
+  works only while the built-in screen is the main display. See [Scenarios](#scenarios).
+- **Integer scaling on every screen.** eGPU monitors and the built-in screen. Pick an exact
+  divisor (1920 x 1080 on 4K, 1280 x 800 on the 2560 x 1600 panel) and every pixel stays sharp.
+  Mode changes ask to keep them and revert after 15 seconds.
+- **GPU apps.** Games from Steam, Epic and GOG, plus your own folders and programs, each with a
+  switch to run on the eGPU. A game set to the eGPU opens on the eGPU monitor, and Legion Space
+  popping up at game start is sent back. Game mode switches apps you pick off while a game runs
+  and can keep only the main display.
+- **Local AI.** Free eGPU memory, which Ollama models fit in it, what is loaded now (GPU vs RAM
+  split, unload, end Ollama). Models are unloaded when a game starts or the eGPU is unplugged.
+  AI mode switches apps you pick off while a model is loaded.
+- **On-demand apps.** Services, scheduled tasks, startup entries and updaters, grouped by vendor
+  and install folder into *families*. "Keep off", or "Follow app" (on while the app runs).
+  Everything is recorded first and put back with "Back to normal" or on uninstall.
+- **eGPU tuning.** Live power, temperature, clocks, usage and VRAM; power limit, clock ceilings
+  and 3D settings on NVIDIA; Radeon features; a short stress test. Only what the card supports is
+  shown. A hung AMD Adrenalin is restarted (automatically or from the tray).
+- **Also:** memory history with leak detection, a tray panel, light and dark themes, and optional
+  network routing (internet over Wi-Fi or LAN, a side and kill switch per VPN; any wired adapter,
+  any Windows language). Network routing is off until you set it up.
 
 ## Scenarios
 
 | Setup | What happens |
 |---|---|
-| eGPU monitor is the **main display** | Apps start on the eGPU. *Legion Space on iGPU* works: Legion Space runs on the iGPU and a resolution chosen in it is applied to the built-in screen. Its windows open on the eGPU monitor: Legion Space always lays them out on the main display and puts them back if moved, so *Legion Space on built-in screen* has no effect here (it can be switched off, not on). |
-| Built-in screen is the **main display**, eGPU monitor extended | Both options work: Legion Space runs on the iGPU and its windows are kept on the built-in screen. Apps you set to the eGPU (GPU apps) still render there, and games set to the eGPU are moved to the eGPU monitor. |
-| Built-in screen **off** | *Legion Space on iGPU* works; its windows follow the main display (nothing to keep them on). |
-| **No eGPU** | eGPU pages show "not attached", the Local AI tab notes that models would only take system RAM, integer scaling on the built-in screen keeps working. |
-| **Game running** | On NVIDIA, integer scaling follows the game's mode (sharp for exact divisors, stretched otherwise) and returns afterwards; on AMD it stays as set (pick an exact divisor in the game); Ollama models are unloaded first. |
+| eGPU monitor is the **main display** | Apps start on the eGPU. *Legion Space on iGPU* works. Legion Space lays its windows out on the main display and puts them back if moved, so *Legion Space on built-in screen* has no effect here (it can be switched off, not on). |
+| Built-in screen is the **main display**, eGPU monitor extended | Both options work. Apps set to the eGPU render there; games set to the eGPU are moved to the eGPU monitor. |
+| Built-in screen **off** | *Legion Space on iGPU* works; its windows follow the main display. |
+| **No eGPU** | eGPU pages show "not attached"; the Local AI tab notes that models would only take system RAM; integer scaling on the built-in screen keeps working. |
+| **Game running** | Ollama models are unloaded first. NVIDIA: integer scaling follows the game's mode and returns afterwards. AMD: the driver applies scaling only at a mode change, so it stays as set; run the game at an exact divisor. |
 | **eGPU unplugged** | Ollama models are unloaded; the other eGPU settings wait for the next attach. |
 | **Switching NVIDIA <-> AMD** | The new card's profile applies; the AMD driver stays bound to the AMD card only. |
 
 ## Install
 
-1. Download `keel-setup-<version>.exe` and its `.sha256` file from
-   [Releases](../../releases).
-2. Check the download before running it. In PowerShell:
+1. Download `keel-setup-<version>.exe` and its `.sha256` file from [Releases](../../releases).
+2. Check the hash:
 
    ```powershell
    Get-FileHash .\keel-setup-<version>.exe -Algorithm SHA256
    ```
 
-   The hash must match the one in the `.sha256` file and in the release notes. If it does not,
-   do not run the file.
-3. Run the installer as administrator. It installs to `C:\Program Files\Keel`, registers the
-   `Keel` service, starts the tray at logon and (optionally) adds `keel` to the PATH. Upgrades
-   install over the old version and keep your settings.
+   It must match the `.sha256` file and the release notes. If not, do not run the file.
+3. Run the installer as administrator. It installs to `C:\Program Files\Keel`, registers the `Keel`
+   service, starts the tray at logon and optionally adds `keel` to the PATH. Upgrades keep your
+   settings.
 
 ```powershell
 keel status        # service and features
 keel help          # command-line tools (memory, eGPU, displays, network)
 ```
 
-To build it yourself instead (Windows 11, Rust stable with MSVC, Inno Setup 6):
-`.\build.ps1` builds, runs the tests and writes `dist\keel-setup-<version>.exe` with its SHA-256.
+To build it yourself (Windows 11, Rust stable with MSVC, Inno Setup 6): `.\build.ps1` builds,
+tests and writes `dist\keel-setup-<version>.exe` with its SHA-256.
 
 ### Windows warnings, and what Keel can do on your PC
 
-The installer is **not code-signed** (a signing certificate costs money every year for a hobby
-project). Expect this:
+The installer is **not code-signed**:
 
-- **SmartScreen** shows "Windows protected your PC" for an unknown publisher. "More info" then
-  "Run anyway" starts it. Do this only after the hash matched.
-- **Microsoft Defender or other antivirus** may flag or quarantine it, mostly because a new,
-  unsigned program installs a service and changes system settings. If yours does, check the hash,
-  and if you are unsure, don't install it; you can read the source and build it yourself.
+- **SmartScreen** shows "Windows protected your PC". "More info", then "Run anyway", only after
+  the hash matched.
+- **Defender or other antivirus** may flag it: an unsigned program that installs a service and
+  changes system settings. Check the hash; if unsure, don't install, or build from source.
 
-Keel runs a service as LocalSystem, so it can change the system. Here is all of it:
+Keel runs a service as LocalSystem. All it may change:
 
 | Part | What it may change | When |
 |---|---|---|
@@ -122,17 +101,16 @@ Keel runs a service as LocalSystem, so it can change the system. Here is all of 
 | On-demand apps / AI and game mode | service start types, scheduled tasks, startup entries of app families you pick; ends their processes | only families you pick; never Windows core, GPU drivers, the handheld vendor's or security software |
 | Network | interface metrics, routes, firewall rules for VPN kill switches | only after you turn Network on and set it up |
 
-- Every change is recorded first (registry exports, original values) and is put back by
-  "Back to normal", by turning the feature off, or by uninstalling Keel.
-- Drivers are never deleted. No kernel drivers, and no code is injected into other programs.
-  The service only does fixed jobs on request; it never runs a path or command it is sent.
-- Keel sends nothing over the internet: no telemetry, no update checks. The only network
-  connection it makes is to Ollama on your own PC (`127.0.0.1:11434`) for Local AI.
-- Uninstalling stops the service and puts back everything it changed.
+- Every change is recorded first and put back by "Back to normal", by turning the feature off, or
+  by uninstalling Keel.
+- Drivers are never deleted. No kernel drivers, no code injected into other programs. The service
+  does fixed jobs only; it never runs a path or command it is sent.
+- No telemetry, no update checks. The only connection is to Ollama on your own PC
+  (`127.0.0.1:11434`).
 
-**Use at your own risk.** Keel is tested on one Legion Go (Ryzen Z1 Extreme) with an NVIDIA
-RTX 2080 Ti and an AMD RX 7600M XT on a USB4 dock. Other eGPUs and handhelds should work but are
-untested. Keel is not affiliated with Lenovo, AMD, NVIDIA or Microsoft.
+**Use at your own risk.** Tested on one Legion Go (Ryzen Z1 Extreme) with an NVIDIA RTX 2080 Ti
+and an AMD RX 7600M XT on a USB4 dock; other eGPUs and handhelds are untested. Keel is not
+affiliated with Lenovo, AMD, NVIDIA or Microsoft.
 
 ## Layout
 
@@ -152,7 +130,7 @@ See [CHANGELOG.md](CHANGELOG.md) for releases.
 
 ## License
 
-[MIT](LICENSE). Free to use, change and share; it comes with no warranty.
+[MIT](LICENSE). No warranty.
 
 The user interface is made with [Slint](https://slint.dev), used under the Slint Royalty-free
 Desktop, Mobile, and Web Applications License 2.0.
