@@ -192,6 +192,7 @@ fn show_egpu(ui: &MainWindow) {
 fn show_prefs(ui: &MainWindow, p: &Prefs) {
     let d = ui.global::<EgpuData>();
     d.set_opt_legion(p.legion_space_pin);
+    d.set_opt_legion_screen(p.legion_screen());
     d.set_opt_primary(p.egpu_primary_display);
     d.set_opt_prune(p.prune_amd_tray_icons);
     d.set_opt_search(p.restart_search_after_scaling);
@@ -767,6 +768,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let d = ui.global::<EgpuData>();
             let mut p = Prefs::load();
             p.legion_space_pin = d.get_opt_legion();
+            p.legion_space_screen = Some(d.get_opt_legion_screen());
             p.egpu_primary_display = d.get_opt_primary();
             p.prune_amd_tray_icons = d.get_opt_prune();
             p.restart_search_after_scaling = d.get_opt_search();

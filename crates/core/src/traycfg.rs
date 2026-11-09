@@ -17,7 +17,8 @@ pub const ITEMS: &[(&str, &str, &str)] = &[
     ("egpu.display", "eGPU display", "submenu: modes and integer scaling of eGPU monitors"),
     ("egpu.primary", "eGPU as main display", "check: make the eGPU monitor the main display on attach"),
     ("egpu.game_gpu", "Game on eGPU", "run the current game on the eGPU from its next start"),
-    ("egpu.legion", "Legion Space on iGPU", "check: keep Legion Space on the iGPU and built-in screen"),
+    ("egpu.legion", "Legion Space on iGPU", "check: run Legion Space on the iGPU; its resolution changes go to the built-in screen"),
+    ("egpu.legion_screen", "Legion Space on built-in screen", "check: keep Legion Space's windows on the built-in screen while it is the main display"),
     ("egpu.driver", "Driver", "submenu: update the AMD eGPU driver, Windows Update block, status"),
     ("egpu.adrenalin", "Restart Adrenalin", "end and start AMD Adrenalin"),
     ("ram.ondemand", "On-demand apps", "submenu: apps that run only when used, on / off"),
@@ -38,8 +39,12 @@ fn default_favorites() -> Vec<String> { DEFAULT_FAVORITES.iter().map(|s| s.to_st
 pub struct Prefs {
     /// Menu items in menu order (ids from `ITEMS`).
     pub favorites: Vec<String>,
-    /// Keep Legion Space on the iGPU (graphics preference) and on the built-in screen.
+    /// Run Legion Space on the iGPU (graphics preference, its ADL pointed at the iGPU, its
+    /// resolution changes sent to the built-in screen). Works with any main display.
     pub legion_space_pin: bool,
+    /// Keep Legion Space's windows on the built-in screen; works only while that is the main
+    /// display. Unset (tray.toml from before 0.1.42): follows `legion_space_pin`, which covered both.
+    pub legion_space_screen: Option<bool>,
     /// Delete duplicate tray-icon settings of AMD's dgtrayicon.exe (one per start) after a backup.
     pub prune_amd_tray_icons: bool,
     /// Once per eGPU attach, make the first display on the eGPU the Windows main display.
@@ -84,9 +89,14 @@ pub struct Prefs {
     pub ignored: Vec<String>,
 }
 
+impl Prefs {
+    /// Whether Legion Space's windows are kept on the built-in screen (when it is the main display).
+    pub fn legion_screen(&self) -> bool { self.legion_space_screen.unwrap_or(self.legion_space_pin) }
+}
+
 impl Default for Prefs {
     fn default() -> Self {
-        Self { favorites: default_favorites(), legion_space_pin: false, prune_amd_tray_icons: true, egpu_primary_display: false,
+        Self { favorites: default_favorites(), legion_space_pin: false, legion_space_screen: None, prune_amd_tray_icons: true, egpu_primary_display: false,
                restart_search_after_scaling: true, notifications: true, side_menu: 0, hidden_widgets: Vec::new(),
                keep_memory_history: false, fast_samples: false, home_order: Vec::new(), egpu_tuning_first: false, ai_mode: false, ai_mode_apps: Vec::new(),
                game_mode: false, game_mode_apps: Vec::new(), game_one_display: false, game_to_egpu_screen: true, game_hide_legion: true,
@@ -146,8 +156,19 @@ pub fn moved(mut v: Vec<String>, i: usize, delta: i32) -> Vec<String> {
 }
 
 impl Prefs {
-    pub fn load() -> Self { read(&prefs_path()).unwrap_or_default() }
+    pub fn load() -> Self { read::<Prefs>(&prefs_path()).map(Prefs::upgrade).unwrap_or_default() }
     pub fn save(&self) -> anyhow::Result<()> { write(&prefs_path(), self) }
+
+    /// A tray.toml from before 0.1.42 had one Legion Space item: the new window item goes next
+    /// to it in the menu (pure; tested).
+    fn upgrade(mut self) -> Self {
+        if self.legion_space_screen.is_none() && !self.has("egpu.legion_screen") {
+            if let Some(i) = self.favorites.iter().position(|f| f == "egpu.legion") {
+                self.favorites.insert(i + 1, "egpu.legion_screen".into());
+            }
+        }
+        self
+    }
     pub fn has(&self, id: &str) -> bool { self.favorites.iter().any(|f| f == id) }
 }
 
@@ -201,6 +222,11 @@ mod tests {
     fn partial_files_keep_defaults_and_round_trip() {
         let p: Prefs = toml::from_str("legion_space_pin = true\n").unwrap();
         assert!(p.legion_space_pin && p.notifications);
+        assert!(p.legion_screen(), "an old tray.toml keeps the window pin it had");
+        let q: Prefs = toml::from_str("legion_space_pin = true\nlegion_space_screen = false\n").unwrap();
+        assert!(q.legion_space_pin && !q.legion_screen());
+        let q: Prefs = toml::from_str("favorites = [\"status.ram\", \"egpu.legion\", \"logs\"]\n").unwrap();
+        assert_eq!(q.upgrade().favorites, ["status.ram", "egpu.legion", "egpu.legion_screen", "logs"]);
         assert_eq!(p.favorites, default_favorites());
         assert_eq!(toml::from_str::<Prefs>(&toml::to_string(&p).unwrap()).unwrap(), p);
         let m = Memory { primary_done_luid: 103219, int_game_handover: vec!["DISPLAY5".into()], ..Default::default() };

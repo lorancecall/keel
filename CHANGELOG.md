@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.42
+
+- The Legion Space option is split in two, since only half of it can work with the eGPU monitor
+  as the main display. *Legion Space on iGPU* (graphics preference, its resolution changes sent
+  to the built-in screen) works with any main display and is never greyed out in the tray menu
+  any more. *Legion Space on built-in screen* keeps its windows there and works only while the
+  built-in screen is the main display. A tray.toml from before keeps what the single option did.
+  New tray menu item: "Legion Space on built-in screen". README scenarios follow.
+- The "Keep this display mode?" box comes to the front and takes the keyboard; it used to open
+  behind the active window after a mode change or a request from the main window.
+
 ## 0.1.41
 
 - The main window and the tray panel redraw themselves fully the moment they move, come to the

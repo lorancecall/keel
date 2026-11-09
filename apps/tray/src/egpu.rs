@@ -72,6 +72,7 @@ fn prefer_gpu(exe: &str) -> anyhow::Result<()> {
 // --- Legion Space window pin: a WinEvent hook moves its windows the moment they show up; the
 // once-a-second refresh catches windows Legion Space repositions after showing them. ---
 
+/// "Legion Space on built-in screen" is on (`Prefs::legion_screen`).
 static PIN_ON: AtomicBool = AtomicBool::new(false);
 /// Moving windows can work now: the built-in screen is on and is the main display (legion::pin_state).
 static PIN_ALLOWED: AtomicBool = AtomicBool::new(false);
@@ -96,8 +97,8 @@ fn install_hooks() {
     }
 }
 
+/// "Legion Space on iGPU": its graphics preference (the ADL redirect is the service's job).
 fn apply_legion(on: bool) {
-    PIN_ON.store(on, Ordering::Relaxed);
     let changed = legion::set_igpu_preference(on);
     for exe in &changed {
         tray_log(&format!("legion space: graphics preference {} for {exe}", if on { "power saving (iGPU)" } else { "cleared" }));
@@ -106,9 +107,20 @@ fn apply_legion(on: bool) {
     if changed.iter().any(|e| e.ends_with("LegionSettingMenu.exe")) && legion::restart_quick_menu() {
         tray_log("legion space: quick menu ended so the new graphics preference applies on its next start");
     }
+}
+
+/// "Legion Space on built-in screen": its windows are moved there while it is the main display.
+fn apply_screen(on: bool) {
+    PIN_ON.store(on, Ordering::Relaxed);
     if on && PIN_ALLOWED.load(Ordering::Relaxed) {
         if let Some(m) = display::internal_monitor() { legion::pin_all(&m); }
     }
+}
+
+/// The window option can be switched on only while the built-in screen is the main display
+/// (greyed otherwise: the menu cannot show a tooltip), and off at any time.
+fn screen_item_enabled(state: Option<legion::PinState>, prefs: &Prefs) -> bool {
+    state == Some(legion::PinState::On) || prefs.legion_screen()
 }
 
 // --- eGPU display modes: Keel owns the displays on the eGPU, Legion Space owns the
@@ -128,6 +140,9 @@ struct PendingMode {
     answer: Arc<AtomicU8>,
     /// Set when this change switched integer scaling on for that monitor: going back undoes it all.
     int_undo: Option<String>,
+    /// The box was brought to the front once (a box shown after a mode change or a request from
+    /// the main window opened behind the active window).
+    focused: bool,
 }
 
 fn confirm_text(secs: u64) -> String {
@@ -147,10 +162,30 @@ fn confirm_box() -> Option<HWND> {
     unsafe { FindWindowW(w!("#32770"), &HSTRING::from(CONFIRM_TITLE)) }.ok()
 }
 
+/// Brings the box to the front and gives it the keyboard. The tray is rarely the foreground
+/// process when the box shows (the mode change or the main window took it), so
+/// MB_SETFOREGROUND alone is refused; joining the foreground thread's input for the call is
+/// allowed. True once the box is in front.
+fn focus_confirm_box(h: HWND) -> bool {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg == h { return true; }
+        let (me, them) = (GetCurrentThreadId(), GetWindowThreadProcessId(fg, None));
+        let joined = them != 0 && them != me && AttachThreadInput(me, them, true).as_bool();
+        let _ = BringWindowToTop(h);
+        let ok = SetForegroundWindow(h).as_bool();
+        if joined { let _ = AttachThreadInput(me, them, false); }
+        ok
+    }
+}
+
 /// Updates the countdown and keeps the box centered on the changed monitor (a mode change
-/// otherwise leaves it in a corner).
-fn update_confirm_box(gdi: &str, secs: u64) {
+/// otherwise leaves it in a corner). Brings it to the front the first time it is seen.
+fn update_confirm_box(gdi: &str, secs: u64, focused: &mut bool) {
     let Some(h) = confirm_box() else { return };
+    if !*focused { *focused = focus_confirm_box(h); }
     unsafe {
         let _ = SetDlgItemTextW(h, MSGBOX_TEXT_ID, &HSTRING::from(confirm_text(secs)));
         let (Some(m), mut r) = (display::monitor_by_name(gdi), RECT::default()) else { return };
@@ -163,7 +198,7 @@ fn update_confirm_box(gdi: &str, secs: u64) {
 }
 
 fn finish_pending(st: &mut State) {
-    let Some(p) = &st.pending else { return };
+    let Some(p) = &mut st.pending else { return };
     let answer = p.answer.load(Ordering::SeqCst);
     if answer == 1 {
         tray_log(&format!("display: kept the new mode on {}", p.gdi));
@@ -189,7 +224,7 @@ fn finish_pending(st: &mut State) {
         st.display_key = None;
     } else {
         let left = p.deadline.saturating_duration_since(Instant::now()).as_secs_f32().ceil() as u64;
-        update_confirm_box(&p.gdi, left);
+        update_confirm_box(&p.gdi, left, &mut p.focused);
     }
 }
 
@@ -262,6 +297,7 @@ pub struct Ui {
     pub info_game: MenuItem,
     pub pin_game: MenuItem,
     pub legion_pin: CheckMenuItem,
+    pub legion_screen: CheckMenuItem,
     pub egpu_primary: CheckMenuItem,
     pub driver: Submenu,
     driver_update: MenuItem,
@@ -284,6 +320,7 @@ impl Ui {
             info_game: MenuItem::new("Game: none", false, None),
             pin_game: MenuItem::new("Game on eGPU", false, None),
             legion_pin: CheckMenuItem::new(LEGION_LABEL, true, prefs.legion_space_pin, None),
+            legion_screen: CheckMenuItem::new(LEGION_SCREEN_LABEL, prefs.legion_screen(), prefs.legion_screen(), None),
             egpu_primary: CheckMenuItem::new("eGPU as main display", true, prefs.egpu_primary_display, None),
             driver, driver_update, wu_block, driver_status,
             restart_adrenalin: MenuItem::new("Restart Adrenalin", true, None),
@@ -300,6 +337,7 @@ impl Ui {
             "egpu.primary" => &self.egpu_primary,
             "egpu.game_gpu" => &self.pin_game,
             "egpu.legion" => &self.legion_pin,
+            "egpu.legion_screen" => &self.legion_screen,
             "egpu.driver" => &self.driver,
             "egpu.adrenalin" => &self.restart_adrenalin,
             _ => return None,
@@ -308,6 +346,7 @@ impl Ui {
 }
 
 const LEGION_LABEL: &str = "Legion Space on iGPU";
+const LEGION_SCREEN_LABEL: &str = "Legion Space on built-in screen";
 
 pub struct State {
     /// Whether the built-in screen was active at the last refresh (None before the first).
@@ -471,7 +510,7 @@ fn int_on(st: &mut State, gdi: &str, monitor: &str) {
             let answer = Arc::new(AtomicU8::new(0));
             ask_keep(answer.clone());
             st.pending = Some(PendingMode { gdi: gdi.into(), old: cur, deadline: Instant::now() + Duration::from_secs(CONFIRM_SECS),
-                                            answer, int_undo: Some(monitor.into()) });
+                                            answer, int_undo: Some(monitor.into()), focused: false });
         }
         Err(e) => { int_log(&[format!("{gdi}: mode change failed: {e}")]); int_off(st, monitor, None); }
     }
@@ -825,19 +864,15 @@ pub fn refresh(ui: &Ui, st: &mut State, cfg: &Config) {
     if st.pin_state != Some(state) {
         if st.pin_state.is_some() { tray_log(&format!("legion space: window pin {state:?}")); }
         st.pin_state = Some(state);
-        // Works only while the built-in screen is the main display: greyed out otherwise (the
-        // menu cannot show a tooltip; the main window shows the reason).
-        ui.legion_pin.set_enabled(state == legion::PinState::On);
+        ui.legion_screen.set_enabled(screen_item_enabled(st.pin_state, &st.prefs));
     }
 
-    if st.prefs.legion_space_pin && internal_on {
-        if state == legion::PinState::On {
-            if let Some(m) = display::internal_monitor() {
-                if legion::pin_all(&m).1 > 0 { tray_log(GAVE_UP); }
-            }
+    if st.prefs.legion_screen() && state == legion::PinState::On {
+        if let Some(m) = display::internal_monitor() {
+            if legion::pin_all(&m).1 > 0 { tray_log(GAVE_UP); }
         }
-        if legion::in_use() { st.legion_seen = Some(Instant::now()); }
     }
+    if st.prefs.legion_space_pin && internal_on && legion::in_use() { st.legion_seen = Some(Instant::now()); }
 
     finish_pending(st);
     if st.pending.is_some() { return; }
@@ -882,7 +917,7 @@ fn set_mode_asking(st: &mut State, gdi: String, m: display::Mode) {
             tray_log(&format!("display: {gdi} {old} -> {m}"));
             let answer = Arc::new(AtomicU8::new(0));
             ask_keep(answer.clone());
-            st.pending = Some(PendingMode { gdi, old, deadline: Instant::now() + Duration::from_secs(CONFIRM_SECS), answer, int_undo: None });
+            st.pending = Some(PendingMode { gdi, old, deadline: Instant::now() + Duration::from_secs(CONFIRM_SECS), answer, int_undo: None, focused: false });
         }
         (_, Err(e)) => notify(&format!("Display mode not changed: {e}")),
         _ => {}
@@ -940,6 +975,8 @@ pub fn handle(ui: &Ui, st: &mut State, cfg: &Config, id: &MenuId) -> bool {
         }
     } else if id == ui.legion_pin.id() {
         let on = ui.legion_pin.is_checked();
+        // An old tray.toml's window option followed this one: keep it as it was.
+        st.prefs.legion_space_screen = Some(st.prefs.legion_screen());
         st.prefs.legion_space_pin = on;
         st.save_prefs();
         apply_legion(on);
@@ -948,9 +985,16 @@ pub fn handle(ui: &Ui, st: &mut State, cfg: &Config, id: &MenuId) -> bool {
             service_job(serde_json::json!({"cmd": "legion-fix", "on": on}), if on { "egpu legion-fix on" } else { "egpu legion-fix off" });
         }
         if on {
-            notify("Legion Space now stays on the iGPU and the built-in screen. Its own settings are not changed. Restart Legion Space once.");
+            notify("Legion Space now runs on the iGPU; its resolution changes go to the built-in screen. Its own settings are not changed. Restart Legion Space once.");
         }
-        tray_log(&format!("legion space pin: {}", if on { "on" } else { "off" }));
+        tray_log(&format!("legion space on iGPU: {}", if on { "on" } else { "off" }));
+    } else if id == ui.legion_screen.id() {
+        let on = ui.legion_screen.is_checked();
+        st.prefs.legion_space_screen = Some(on);
+        st.save_prefs();
+        apply_screen(on);
+        ui.legion_screen.set_enabled(screen_item_enabled(st.pin_state, &st.prefs));
+        tray_log(&format!("legion space on built-in screen: {}", if on { "on" } else { "off" }));
     } else if id == ui.egpu_primary.id() {
         let on = ui.egpu_primary.is_checked();
         st.prefs.egpu_primary_display = on;
@@ -1000,6 +1044,9 @@ impl State {
     /// The main window changed `tray.toml`: take its options (Legion Space pin applied at once).
     pub fn set_prefs(&mut self, ui: &Ui, p: Prefs) {
         if p.legion_space_pin != self.prefs.legion_space_pin { apply_legion(p.legion_space_pin); }
+        if p.legion_screen() != self.prefs.legion_screen() { apply_screen(p.legion_screen()); }
+        ui.legion_screen.set_checked(p.legion_screen());
+        ui.legion_screen.set_enabled(screen_item_enabled(self.pin_state, &p));
         if p.egpu_primary_display && !self.prefs.egpu_primary_display { self.mem.primary_done_luid = 0; }
         ui.legion_pin.set_checked(p.legion_space_pin);
         ui.egpu_primary.set_checked(p.egpu_primary_display);
@@ -1007,10 +1054,11 @@ impl State {
     }
 }
 
-/// At tray start: hooks for the Legion Space pin, and the pin itself if it is on.
+/// At tray start: hooks for the Legion Space window pin, and both Legion Space options.
 pub fn start(prefs: &Prefs) {
     install_hooks();
     if prefs.legion_space_pin { apply_legion(true); }
+    apply_screen(prefs.legion_screen());
 }
 
 /// The slower jobs of the loop: tuning apps / Adrenalin every 5 s, tray-icon pruning, Windows

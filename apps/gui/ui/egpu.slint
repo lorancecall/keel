@@ -81,6 +81,7 @@ export global EgpuData {
     in property <[ResultRow]> stress-results;
     // options + details (existing)
     in-out property <bool> opt-legion;
+    in-out property <bool> opt-legion-screen;
     in property <bool> legion-ok: true;
     in-out property <bool> opt-primary;
     in-out property <bool> opt-prune;
@@ -534,14 +535,19 @@ export component EgpuPage inherits ScrollView {
             spacing: 6px;
             Section { text: "OPTIONS (THE TRAY DOES THESE)"; }
             CheckBox {
-                text: "Keep Legion Space on the iGPU and the built-in screen";
-                // Off works any time (it also clears the iGPU preference); on needs the built-in screen as main.
-                enabled: EgpuData.legion-ok || EgpuData.opt-legion;
+                text: "Run Legion Space on the iGPU (its resolution changes go to the built-in screen)";
+                checked <=> EgpuData.opt-legion; toggled => { EgpuData.options-changed(); }
+            }
+            CheckBox {
+                text: "Keep Legion Space's windows on the built-in screen (while it is the main display)";
+                // Off works any time; on needs the built-in screen as main (Legion Space puts its
+                // windows back on the main display otherwise).
+                enabled: EgpuData.legion-ok || EgpuData.opt-legion-screen;
                 Tooltip {
                     text: EgpuData.legion-ok ? @markdown("Moves Legion Space's windows to the built-in screen.")
-                        : @markdown("Needs the built-in screen as main display.");
+                        : @markdown("Needs the built-in screen as main display: Legion Space opens its windows on the main display.");
                 }
-                checked <=> EgpuData.opt-legion; toggled => { EgpuData.options-changed(); }
+                checked <=> EgpuData.opt-legion-screen; toggled => { EgpuData.options-changed(); }
             }
             CheckBox { text: "Make the eGPU monitor the main display on attach"; checked <=> EgpuData.opt-primary; toggled => { EgpuData.options-changed(); } }
             CheckBox { text: "Clean up duplicate AMD tray icons"; checked <=> EgpuData.opt-prune; toggled => { EgpuData.options-changed(); } }

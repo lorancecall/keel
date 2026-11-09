@@ -30,9 +30,11 @@ and a small amount of RAM working together: one background service, a tray icon 
   are kept per GPU. Plug an NVIDIA
   card in after an AMD one, or back, and Keel picks up the right one. NVIDIA's helper services can
   be stopped while no NVIDIA GPU is present (opt-in) and come back when one is.
-- **Legion Space and the eGPU get along.** Legion Space stays on the iGPU, and a resolution picked
-  in Legion Space goes to the built-in screen instead of the eGPU monitor. Its windows are kept on
-  the built-in screen when that is the main display (see [Scenarios](#scenarios)).
+- **Legion Space and the eGPU get along.** Two options (External GPU page, tray menu):
+  *Legion Space on iGPU* keeps it on the iGPU and sends a resolution picked in Legion Space to the
+  built-in screen instead of the eGPU monitor, whichever display is the main one. *Legion Space on
+  built-in screen* keeps its windows on the built-in screen, which works only while that is the
+  main display (see [Scenarios](#scenarios)).
 - **Resolution and integer scaling on every screen.** For eGPU monitors (NVIDIA and AMD) and the
   built-in screen (through the iGPU driver): pick an exact divisor such as 1920 x 1080 on a 4K
   monitor or 1280 x 800 on the 2560 x 1600 panel and every pixel stays sharp. While a game runs,
@@ -68,9 +70,9 @@ and a small amount of RAM working together: one background service, a tray icon 
 
 | Setup | What happens |
 |---|---|
-| eGPU monitor is the **main display** | Apps start on the eGPU. Legion Space always opens its windows on the main display and puts them back if moved, so Keel **cannot pin Legion Space to the built-in screen** here; that option is greyed out. Legion Space still runs on the iGPU, and a resolution chosen in it is applied to the built-in screen. |
-| Built-in screen is the **main display**, eGPU monitor extended | Legion Space windows are kept on the built-in screen. Apps you set to the eGPU (GPU apps) still render there. |
-| Built-in screen **off** | Nothing to pin; Legion Space follows the main display. |
+| eGPU monitor is the **main display** | Apps start on the eGPU. *Legion Space on iGPU* works: Legion Space runs on the iGPU and a resolution chosen in it is applied to the built-in screen. Its windows open on the eGPU monitor: Legion Space always lays them out on the main display and puts them back if moved, so *Legion Space on built-in screen* has no effect here (it can be switched off, not on). |
+| Built-in screen is the **main display**, eGPU monitor extended | Both options work: Legion Space runs on the iGPU and its windows are kept on the built-in screen. Apps you set to the eGPU (GPU apps) still render there, and games set to the eGPU are moved to the eGPU monitor. |
+| Built-in screen **off** | *Legion Space on iGPU* works; its windows follow the main display (nothing to keep them on). |
 | **No eGPU** | eGPU pages show "not attached", the Local AI tab notes that models would only take system RAM, integer scaling on the built-in screen keeps working. |
 | **Game running** | On NVIDIA, integer scaling follows the game's mode (sharp for exact divisors, stretched otherwise) and returns afterwards; on AMD it stays as set (pick an exact divisor in the game); Ollama models are unloaded first. |
 | **eGPU unplugged** | Ollama models are unloaded; the other eGPU settings wait for the next attach. |
