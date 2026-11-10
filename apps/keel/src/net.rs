@@ -41,7 +41,7 @@ fn print_status(full: bool) -> Result<()> {
         let role = |a: &model::Adapter| {
             if snap.wifi(cfg).iter().any(|x| x.index == a.index) { "wifi" }
             else if snap.lans(cfg).iter().any(|x| x.index == a.index) { "lan" }
-            else if cfg.vpns.iter().any(|v| !v.adapter.is_empty() && model::glob(&v.adapter, &a.description)) { "vpn" } else { "" }
+            else if cfg.vpns.iter().any(|v| v.is_tunnel(a)) { "vpn" } else { "" }
         };
         for a in &snap.adapters {
             let gw = snap.gateway(a.index).map(|g| g.to_string()).unwrap_or("-".into());
@@ -57,7 +57,8 @@ fn print_status(full: bool) -> Result<()> {
             .map(|x| x.to_string()).collect();
         println!("Keel / split routes: {}", if splits.is_empty() { "none".into() } else { splits.join("; ") });
         for rule in &snap.rules {
-            println!("firewall {}: {} on {}", rule.name, if rule.enabled { "block" } else { "disabled" }, rule.aliases.join(", "));
+            let what = match &rule.ports { Some((pr, ports)) => format!("{} {ports}", if *pr == 17 { "udp" } else { "tcp" }), None => rule.program.clone() };
+            println!("firewall {}: {} {what} on {}", rule.name, if rule.enabled { "block" } else { "disabled" }, rule.aliases.join(", "));
         }
         let side = |s: Option<Side>| s.map_or("-".to_string(), |s| s.to_string());
         println!("\nVPN side (lowest metric): {}; general internet: {}", side(plan.follow), side(plan.internet));

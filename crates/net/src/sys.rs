@@ -120,7 +120,7 @@ pub fn apply(a: &Action) -> Result<()> {
         Action::RestoreMetric { index, auto, metric, .. } => set_metric(*index, *auto, *metric),
         Action::AddRoute(r) => unsafe { CreateIpForwardEntry2(&route_row(r)) }.ok().map_err(|e| anyhow!("CreateIpForwardEntry2: {e}")),
         Action::RemoveRoute(r) => unsafe { DeleteIpForwardEntry2(&route_row(r)) }.ok().map_err(|e| anyhow!("DeleteIpForwardEntry2: {e}")),
-        Action::BlockRule { name, program, aliases, outbound } => crate::fw::block(name, program, aliases, *outbound),
+        Action::BlockRule { name, program, aliases, outbound, ports } => crate::fw::block(name, program, aliases, *outbound, ports.as_ref()),
         Action::DisableRule { name } => crate::fw::disable(name),
     }
 }

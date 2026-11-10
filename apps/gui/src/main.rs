@@ -7,7 +7,7 @@
 #![windows_subsystem = "windows"]
 
 use keel_core::traycfg::{self, Prefs};
-use keel_net::model::{Config as NetConfig, Side, Vpn, VpnKind};
+use keel_net::model::{Config as NetConfig, RouteRule, Side, Vpn, VpnKind};
 use keel_ram::family::Family;
 use keel_ram::ondemand::{self, Mode, Request, State};
 use keel_ram::{pipe, scan, userside};
@@ -79,11 +79,84 @@ fn side_index(s: Side) -> i32 { if s == Side::Wifi { 0 } else { 1 } }
 fn index_side(i: i32) -> Side { if i == 0 { Side::Wifi } else { Side::Lan } }
 
 fn vpn_model(c: &NetConfig) -> ModelRc<VpnRow> {
-    ModelRc::new(VecModel::from(c.vpns.iter().map(|v| VpnRow {
-        name: v.name.clone().into(),
-        kind: match v.kind { VpnKind::DefaultRoute => "default route".into(), VpnKind::Server => format!("{} server(s)", v.servers.len()) }.into(),
-        via: side_index(v.via), kill: v.kill_switch, exe: v.exe.clone().into(),
+    ModelRc::new(VecModel::from(c.vpns.iter().map(|v| {
+        let mut kind = vec![match v.kind { VpnKind::DefaultRoute => "follows the default route".to_string(), VpnKind::Server => "own server routes".into() }];
+        if !v.adapter.trim().is_empty() { kind.push(format!("tunnel {}", v.adapter.trim())); }
+        if !v.ports.is_empty() { kind.push(format!("ports {}", v.ports.join(", "))); }
+        if !v.servers.is_empty() { kind.push(format!("{} server(s)", v.servers.len())); }
+        let progs = v.all_programs();
+        VpnRow {
+            name: v.name.clone().into(),
+            kind: kind.join(" · ").into(),
+            via: side_index(v.via), kill: v.kill_switch,
+            exe: if progs.is_empty() { "no program".into() } else { progs.join("; ").into() },
+        }
     }).collect::<Vec<_>>()))
+}
+
+fn route_model(c: &NetConfig) -> ModelRc<RouteRow> {
+    ModelRc::new(VecModel::from(c.routes.iter().map(|r| RouteRow { prefix: r.prefix.clone().into(), via: side_index(r.via) }).collect::<Vec<_>>()))
+}
+
+fn fill_form(ui: &MainWindow, v: &Vpn) {
+    ui.set_new_name(v.name.clone().into());
+    ui.set_new_kind(if v.kind == VpnKind::Server { 1 } else { 0 });
+    ui.set_new_via(side_index(v.via));
+    ui.set_new_kill(v.kill_switch);
+    ui.set_new_exe(v.all_programs().join("\n").into());
+    ui.set_new_adapter(v.adapter.clone().into());
+    ui.set_new_ports(v.ports.join(", ").into());
+    ui.set_new_servers(v.servers.join(", ").into());
+}
+
+/// The VPN in the form, checked.
+fn form_vpn(ui: &MainWindow) -> Result<Vpn, String> {
+    let name = ui.get_new_name().trim().to_string();
+    if name.is_empty() { return Err("A VPN needs a name".into()); }
+    let programs: Vec<String> = ui.get_new_exe().lines().map(|l| l.trim().trim_matches('"').to_string()).filter(|l| !l.is_empty()).collect();
+    let ports: Vec<String> = ui.get_new_ports().split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+    if let Some(bad) = ports.iter().find(|p| keel_net::model::parse_ports(p).is_none()) {
+        return Err(format!("Ports: \"{bad}\" is not like \"udp 51820\""));
+    }
+    let servers: Vec<String> = ui.get_new_servers().split([',', ' ', ';']).filter(|s| !s.is_empty()).map(String::from).collect();
+    if let Some(bad) = servers.iter().find(|s| keel_net::model::parse_prefix(s).is_none()) { return Err(format!("Servers: {bad} is not an address")); }
+    let kill = ui.get_new_kill();
+    if kill && programs.is_empty() && ports.is_empty() { return Err("The kill switch needs a program or a port to block".into()); }
+    let mut v = Vpn { name, kind: if ui.get_new_kind() == 1 { VpnKind::Server } else { VpnKind::DefaultRoute },
+                      adapter: ui.get_new_adapter().trim().to_string(), via: index_side(ui.get_new_via()), kill_switch: kill,
+                      servers, ports, ..Default::default() };
+    v.set_programs(programs);
+    Ok(v)
+}
+
+/// Running programs with a known path, once each: (file name, path, path).
+fn running_programs() -> Vec<(String, String, String)> {
+    let map = keel_ram::procs::device_map();
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for p in keel_ram::procs::snapshot().unwrap_or_default() {
+        let Some(path) = keel_ram::procs::image_path(p.pid, &map).0 else { continue };
+        if out.iter().any(|x| x.2.eq_ignore_ascii_case(&path)) { continue; }
+        out.push((p.name.clone(), path.clone(), path));
+    }
+    out.sort_by_key(|x| x.0.to_lowercase());
+    out
+}
+
+/// Adapters that are no Wi-Fi or LAN, tunnels before WAN miniports: (description, name and state, description).
+fn adapter_picks() -> Vec<(String, String, String)> {
+    use keel_net::model::Kind;
+    let mut v: Vec<_> = keel_net::sys::adapters().unwrap_or_default().into_iter()
+        .filter(|a| a.kind == Kind::Other && !a.description.to_lowercase().contains("loopback"))
+        .map(|a| (a.description.clone(), format!("{} · {}", a.alias, if a.up { "up" } else { "down" }), a.description)).collect();
+    v.sort_by_key(|x| (x.0.to_lowercase().contains("miniport"), x.0.to_lowercase()));
+    v
+}
+
+fn show_picks(ui: &MainWindow, all: &[(String, String, String)]) {
+    let f = ui.get_pick_filter().to_lowercase();
+    let rows: Vec<PickRow> = all.iter().filter(|x| f.is_empty() || x.0.to_lowercase().contains(&f) || x.1.to_lowercase().contains(&f))
+        .map(|x| PickRow { title: x.0.clone().into(), sub: x.1.clone().into(), value: x.2.clone().into() }).collect();
+    ui.set_pick_rows(ModelRc::new(VecModel::from(rows)));
 }
 
 fn top_row(f: &Family) -> Vec<String> {
@@ -128,6 +201,8 @@ struct Data {
     net: Option<NetConfig>,
     /// What each LAN choice on the Network page saves as `lan_descriptions`.
     net_lans: Vec<Vec<String>>,
+    /// The Network page's picker: (title, detail, value), unfiltered.
+    picks: Vec<(String, String, String)>,
     /// Column and direction each table is sorted by (overview, families, on-demand); kept across reloads.
     sorts: [Option<(usize, bool)>; 3],
 }
@@ -258,6 +333,11 @@ fn set_net_config(ui: &MainWindow, c: &NetConfig, data: &Arc<Mutex<Data>>) {
     ui.set_net_enabled(c.enabled);
     ui.set_net_keep_wifi(c.keep_wifi_with_lan);
     ui.set_vpn_list(vpn_model(c));
+    ui.set_route_list(route_model(c));
+    ui.set_net_ts_wifi(c.tailscale_wifi_only);
+    let presets: Vec<SharedString> = std::iter::once("Start from...".to_string()).chain(Vpn::presets().into_iter().map(|v| v.name))
+        .map(SharedString::from).collect();
+    ui.set_vpn_presets(ModelRc::new(VecModel::from(presets)));
 }
 
 fn show_service(ui: &MainWindow, r: &Option<keel_service::Reply>) {
@@ -940,32 +1020,137 @@ fn main() -> Result<(), slint::PlatformError> {
         let d = data.clone(); let w = ui.as_weak();
         ui.on_vpn_add(move || {
             let Some(ui) = w.upgrade() else { return };
-            let name = ui.get_new_name().trim().to_string();
-            let exe = ui.get_new_exe().trim().trim_matches('"').to_string();
-            if name.is_empty() || exe.is_empty() { ui.set_status("A VPN needs a name and its program".into()); return; }
-            let kind = if ui.get_new_kind() == 1 { VpnKind::Server } else { VpnKind::DefaultRoute };
-            let servers: Vec<String> = ui.get_new_servers().split([',', ' ', ';']).filter(|s| !s.is_empty()).map(String::from).collect();
-            if kind == VpnKind::Server && servers.is_empty() { ui.set_status("A server VPN needs its server addresses".into()); return; }
+            // A mistake stays in the open form, in red, next to the fields.
+            let v = match form_vpn(&ui) { Ok(v) => v, Err(e) => { ui.set_form_error(e.into()); return; } };
             let mut g = d.lock().unwrap();
             let c = g.net.get_or_insert_with(NetConfig::default);
-            c.vpns.push(Vpn { name, kind, exe, adapter: ui.get_new_adapter().trim().to_string(), via: index_side(ui.get_new_via()),
-                              kill_switch: ui.get_new_kill(), servers });
+            let at = ui.get_edit_index();
+            if c.vpns.iter().enumerate().any(|(i, x)| i as i32 != at && x.name.eq_ignore_ascii_case(&v.name)) {
+                ui.set_form_error(format!("A VPN named {} exists: use its Edit button, or pick another name", v.name).into());
+                return;
+            }
+            let note = format!("{} {}. Not saved yet: Save and apply.", v.name, if at < 0 { "added" } else { "changed" });
+            match usize::try_from(at).ok().and_then(|i| c.vpns.get_mut(i)) { Some(x) => *x = v, None => c.vpns.push(v) }
             ui.set_vpn_list(vpn_model(c));
-            for f in [MainWindow::set_new_name, MainWindow::set_new_exe, MainWindow::set_new_adapter, MainWindow::set_new_servers] { f(&ui, SharedString::new()); }
+            // Done: the form closes and empties; the note under the list says what changed.
+            fill_form(&ui, &Vpn { kill_switch: true, ..Default::default() });
+            ui.set_form_error(SharedString::new());
+            ui.set_edit_index(-1);
             ui.set_add_open(false);
+            ui.set_pick_open(false);
             ui.set_net_dirty(true);
-            ui.set_status("Added; not saved yet: Save and apply".into());
+            ui.set_vpn_note(note.clone().into());
+            ui.set_status(note.into());
+        });
+    }
+    {
+        let d = data.clone(); let w = ui.as_weak();
+        ui.on_vpn_edit(move |i| {
+            let Some(ui) = w.upgrade() else { return };
+            let v = usize::try_from(i).ok().and_then(|i| d.lock().unwrap().net.as_ref().and_then(|c| c.vpns.get(i).cloned()));
+            fill_form(&ui, &v.unwrap_or(Vpn { kill_switch: true, ..Default::default() }));
+            ui.set_edit_index(i);
+            ui.set_form_error(SharedString::new());
+            ui.set_pick_open(false);
+            ui.set_add_open(true);
+        });
+    }
+    {
+        let d = data.clone(); let w = ui.as_weak();
+        ui.on_vpn_preset(move |i| {
+            let Some(ui) = w.upgrade() else { return };
+            let Some(v) = usize::try_from(i - 1).ok().and_then(|i| Vpn::presets().get(i).cloned()) else { return };
+            // A new VPN from a preset whose name is taken: edit that one instead of failing at Add.
+            let at = d.lock().unwrap().net.as_ref().and_then(|c| c.vpns.iter().position(|x| x.name.eq_ignore_ascii_case(&v.name)));
+            if let Some(at) = at.filter(|&at| at as i32 != ui.get_edit_index()) {
+                ui.set_edit_index(at as i32);
+                ui.set_form_error(format!("{} already exists: this form now changes it (Done to keep)", v.name).into());
+            } else {
+                ui.set_form_error(SharedString::new());
+            }
+            fill_form(&ui, &v);
+        });
+    }
+    {
+        let d = data.clone(); let w = ui.as_weak();
+        ui.on_pick_load(move |kind| {
+            let Some(ui) = w.upgrade() else { return };
+            let picks = if kind == 0 { running_programs() } else { adapter_picks() };
+            ui.set_pick_kind(kind);
+            ui.set_pick_filter(SharedString::new());
+            show_picks(&ui, &picks);
+            d.lock().unwrap().picks = picks;
+            ui.set_pick_open(true);
+        });
+    }
+    {
+        let d = data.clone(); let w = ui.as_weak();
+        ui.on_pick_filter_changed(move || { if let Some(ui) = w.upgrade() { show_picks(&ui, &d.lock().unwrap().picks); } });
+    }
+    {
+        let w = ui.as_weak();
+        ui.on_pick_choose(move |value| {
+            let Some(ui) = w.upgrade() else { return };
+            let programs = ui.get_pick_kind() == 0;
+            let text = if programs { ui.get_new_exe() } else { ui.get_new_adapter() };
+            let mut list: Vec<String> = text.split(if programs { '\n' } else { ',' }).map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+            if !list.iter().any(|x| x.eq_ignore_ascii_case(&value)) { list.push(value.to_string()); }
+            if programs { ui.set_new_exe(list.join("\n").into()); } else { ui.set_new_adapter(list.join(", ").into()); }
+        });
+    }
+    {
+        let d = data.clone(); let w = ui.as_weak();
+        ui.on_route_add(move || {
+            let Some(ui) = w.upgrade() else { return };
+            let prefix = ui.get_new_route().trim().to_string();
+            if keel_net::model::parse_prefix(&prefix).is_none() { ui.set_status("A route is a.b.c.d or a.b.c.d/n".into()); return; }
+            let mut g = d.lock().unwrap();
+            let c = g.net.get_or_insert_with(NetConfig::default);
+            c.routes.push(RouteRule { prefix, via: index_side(ui.get_new_route_via()) });
+            ui.set_route_list(route_model(c));
+            ui.set_new_route(SharedString::new());
+            ui.set_net_dirty(true);
+        });
+    }
+    {
+        let d = data.clone(); let w = ui.as_weak();
+        ui.on_route_remove_at(move |i| {
+            let Some(ui) = w.upgrade() else { return };
+            let mut g = d.lock().unwrap();
+            let Some(c) = g.net.as_mut() else { return };
+            if (i as usize) < c.routes.len() { c.routes.remove(i as usize); }
+            ui.set_route_list(route_model(c));
+            ui.set_net_dirty(true);
+        });
+    }
+    {
+        let d = data.clone(); let w = ui.as_weak();
+        ui.on_route_set(move |i, via| {
+            let Some(ui) = w.upgrade() else { return };
+            let mut g = d.lock().unwrap();
+            let Some(c) = g.net.as_mut() else { return };
+            if let Some(r) = c.routes.get_mut(i as usize) { r.via = index_side(via); }
+            ui.set_route_list(route_model(c));
+            ui.set_net_dirty(true);
         });
     }
     {
         let d = data.clone(); let w = ui.as_weak();
         ui.on_net_save(move || {
             let Some(ui) = w.upgrade() else { return };
+            // An open VPN form is part of what is saved; a form with a mistake stops the save.
+            if ui.get_add_open() {
+                ui.invoke_vpn_add();
+                if ui.get_add_open() { ui.set_net_dirty(true); ui.set_status("Not saved: fix the VPN form first".into()); return; }
+            }
+            ui.set_net_dirty(false);
+            ui.set_vpn_note(SharedString::new());
             let mut c = d.lock().unwrap().net.clone().unwrap_or_default();
             if let Some(v) = d.lock().unwrap().net_lans.get(ui.get_net_lan() as usize) { c.lan_descriptions = v.clone(); }
             c.internet = index_side(ui.get_net_internet());
             c.enabled = ui.get_net_enabled();
             c.keep_wifi_with_lan = ui.get_net_keep_wifi();
+            c.tailscale_wifi_only = ui.get_net_ts_wifi();
             net_call(&ui, d.clone(), keel_net::service::Request::SetConfig { config: c });
         });
     }

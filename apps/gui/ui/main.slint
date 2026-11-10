@@ -1,5 +1,5 @@
 // Keel main window. Compiled by build.rs (slint-build); see src/main.rs for the logic.
-import { Button, CheckBox, ComboBox, LineEdit, Switch, StandardTableView, TextEdit, ScrollView, GroupBox,
+import { Button, CheckBox, ComboBox, LineEdit, ListView, Switch, StandardTableView, TextEdit, ScrollView, GroupBox,
          VerticalBox, HorizontalBox, Palette } from "std-widgets.slint";
 import { SideMenu, Pages } from "nav.slint";
 import { EgpuPage, EgpuData } from "egpu.slint";
@@ -14,12 +14,32 @@ export { Pages, EgpuData, HomeData, MemHistData, DisplaysData, LocalAiData, Flyo
 export struct Fav { id: string, label: string, desc: string, on: bool, group: string }
 export struct Swatch { hex: string, color: color }
 export struct VpnRow { name: string, kind: string, via: int, kill: bool, exe: string }
+export struct PickRow { title: string, sub: string, value: string }
+export struct RouteRow { prefix: string, via: int }
 export struct Feat { name: string, label: string, on: bool, state: string }
 
 component Card inherits Rectangle {
     border-radius: 8px;
     background: Palette.alternate-background;
     @children
+}
+
+// A form row: label, the field(s), and up to two lines on what the field is for. The lines do
+// not wrap: a wrapped Text inside these layouts was measured as one line and the next card
+// covered the rest of the form.
+component NetField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> help;
+    in property <string> help2;
+    spacing: 2px;
+    HorizontalLayout { spacing: 10px;
+        Text { text: root.label; width: 120px; vertical-alignment: center; }
+        @children
+    }
+    VerticalLayout { padding-left: 130px;
+        Text { text: root.help; overflow: elide; font-size: 11px; color: Palette.foreground.with-alpha(0.6); }
+        if root.help2 != "" : Text { text: root.help2; overflow: elide; font-size: 11px; color: Palette.foreground.with-alpha(0.6); }
+    }
 }
 
 export component MainWindow inherits Window {
@@ -71,13 +91,29 @@ export component MainWindow inherits Window {
     in property <[VpnRow]> vpn-list;
     in-out property <bool> add-open;
     in-out property <bool> net-dirty;
+    // VPN form (add or edit): edit-index -1 adds a new one.
+    in-out property <int> edit-index: -1;
+    in-out property <string> form-error;
+    in-out property <string> vpn-note;
     in-out property <string> new-name;
     in-out property <int> new-kind;
-    in-out property <string> new-exe;
+    in-out property <string> new-exe;        // programs, one per line
     in-out property <string> new-adapter;
     in-out property <string> new-servers;
+    in-out property <string> new-ports;
     in-out property <int> new-via;
     in-out property <bool> new-kill;
+    in property <[string]> vpn-presets;
+    // Picker under the form: 0 running programs, 1 network adapters.
+    in-out property <bool> pick-open;
+    in-out property <int> pick-kind;
+    in-out property <string> pick-filter;
+    in property <[PickRow]> pick-rows;
+    // Destination routes and Tailscale.
+    in property <[RouteRow]> route-list;
+    in-out property <string> new-route;
+    in-out property <int> new-route-via;
+    in-out property <bool> net-ts-wifi;
     // settings
     in property <[Feat]> features;
     in property <[Fav]> favorites;
@@ -105,7 +141,15 @@ export component MainWindow inherits Window {
     in-out property <bool> history-loaded;
     callback vpn-set(int, int, bool);   // row, via (0 Wi-Fi, 1 LAN), kill switch
     callback vpn-remove-at(int);
-    callback vpn-add();
+    callback vpn-add();                 // saves the form (adds, or replaces row edit-index)
+    callback vpn-edit(int);
+    callback vpn-preset(int);
+    callback pick-load(int);
+    callback pick-filter-changed();
+    callback pick-choose(string);
+    callback route-add();
+    callback route-remove-at(int);
+    callback route-set(int, int);
     callback net-save();
     callback net-reapply();
     callback feature-toggled(string, bool);
@@ -255,49 +299,118 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // VPNs: each row edits in place.
+                    // VPNs: rows change side / kill switch in place; Edit opens the full form.
                     Card {
                         VerticalLayout { padding: 14px; spacing: 8px;
                             Text { text: "VPNS"; font-size: 11px; font-weight: 700; color: Palette.foreground.with-alpha(0.6); }
-                            Text { text: "Kill switch: the VPN app can use only its own connection. Tailscale can be kept on Wi-Fi (net.toml: tailscale_wifi_only)."; wrap: word-wrap; font-size: 12px; color: Palette.foreground.with-alpha(0.65); }
+                            Text { text: "Each VPN's own (outer) connection goes over the side you pick. Kill switch: off that side, its programs and ports are blocked, so it goes offline instead of using the other side."; wrap: word-wrap; font-size: 12px; color: Palette.foreground.with-alpha(0.65); }
                             if root.vpn-list.length == 0 : Text { text: "No VPN set up."; color: Palette.foreground.with-alpha(0.65); }
                             for v[i] in root.vpn-list : HorizontalLayout { spacing: 10px;
                                 VerticalLayout { horizontal-stretch: 1;
                                     Text { text: v.name; font-weight: 600; }
+                                    Text { text: v.kind; font-size: 11px; color: Palette.foreground.with-alpha(0.6); overflow: elide; }
                                     Text { text: v.exe; font-size: 11px; color: Palette.foreground.with-alpha(0.6); overflow: elide; }
                                 }
                                 Text { text: "over"; vertical-alignment: center; }
                                 ComboBox { model: ["Wi-Fi", "LAN"]; current-index: v.via; width: 100px; selected => { root.vpn-set(i, self.current-index, v.kill); } }
                                 CheckBox { text: "Kill switch"; checked: v.kill; toggled => { root.vpn-set(i, v.via, self.checked); } }
-                                Button { text: "Remove"; clicked => { root.vpn-remove-at(i); } }
+                                Button { text: "Edit"; clicked => { root.vpn-edit(i); } }
+                                Button { text: "Remove"; clicked => { root.vpn-remove-at(i); root.net-dirty = true; } }
                             }
-                            if !root.add-open : HorizontalLayout { alignment: start;
-                                Button { text: "+ Add VPN"; clicked => { root.add-open = true; } }
+                            HorizontalLayout { spacing: 12px;
+                                Switch { text: "Tailscale only on Wi-Fi"; checked <=> root.net-ts-wifi; width: 230px; toggled => { root.net-dirty = true; } }
+                                Text { text: "Keeps Tailscale off the wired LAN with its kill switch on, whatever its own row says."; wrap: word-wrap; vertical-alignment: center; color: Palette.foreground.with-alpha(0.65); }
                             }
-                            if root.add-open : VerticalLayout { spacing: 6px;
+                            if !root.add-open : HorizontalLayout { alignment: start; spacing: 12px;
+                                Button { text: "+ Add VPN"; clicked => { root.vpn-edit(-1); } }
+                                // What the last Add / Done did, until the next save.
+                                if root.vpn-note != "" : Text { text: root.vpn-note; vertical-alignment: center; color: #b45309; }
+                            }
+                            if root.add-open : VerticalLayout { spacing: 8px;
                                 Rectangle { height: 1px; background: Palette.border; }
-                                Text { text: "New VPN"; font-weight: 600; }
-                                HorizontalLayout { spacing: 8px;
-                                    LineEdit { placeholder-text: "Name (e.g. NordVPN)"; text <=> root.new-name; }
-                                    ComboBox { model: ["Default route", "Server list"]; current-index <=> root.new-kind; width: 200px; }
-                                    ComboBox { model: ["Wi-Fi", "LAN"]; current-index <=> root.new-via; width: 100px; }
+                                HorizontalLayout { spacing: 10px;
+                                    Text { text: root.edit-index < 0 ? "New VPN" : "Edit VPN"; font-weight: 600; vertical-alignment: center; }
+                                    ComboBox { model: root.vpn-presets; width: 200px; selected => { root.vpn-preset(self.current-index); } }
+                                    Text { text: "fills the form; change anything after"; vertical-alignment: center; font-size: 11px; color: Palette.foreground.with-alpha(0.6); horizontal-stretch: 1; }
+                                    Button { text: root.edit-index < 0 ? "Add" : "Done"; primary: true; clicked => { root.vpn-add(); } }
+                                    Button { text: "Cancel"; clicked => { root.add-open = false; root.pick-open = false; root.form-error = ""; } }
+                                }
+                                // Why Add / Done did not go through (or that a preset switched to editing).
+                                if root.form-error != "" : Text { text: root.form-error; color: #c42b1c; font-weight: 600; }
+                                NetField { label: "Name"; help: "Shown here and in the firewall rule names.";
+                                    LineEdit { placeholder-text: "e.g. NordVPN"; text <=> root.new-name; }
+                                }
+                                NetField { label: "Type"; help: "Follows the default route: Tailscale, WireGuard (Keel gives their side the lowest metric)."; help2: "Own server routes: NordVPN, OpenVPN (their server route goes to their side while connected).";
+                                    ComboBox { model: ["Follows the default route", "Own server routes"]; current-index <=> root.new-kind; }
+                                }
+                                NetField { label: "Over"; help: "The side its own connection uses."; help2: "Kill switch: blocked on every other adapter except its tunnel.";
+                                    ComboBox { model: ["Wi-Fi", "LAN"]; current-index <=> root.new-via; width: 110px; }
                                     CheckBox { text: "Kill switch"; checked <=> root.new-kill; }
                                 }
-                                HorizontalLayout { spacing: 8px;
-                                    LineEdit { placeholder-text: "Program (C:\\Program Files\\...\\vpn.exe)"; text <=> root.new-exe; }
-                                    LineEdit { placeholder-text: "Tunnel adapter (e.g. NordLynx*)"; text <=> root.new-adapter; width: 200px; }
-                                    LineEdit { placeholder-text: "Servers (a.b.c.d, ...)"; text <=> root.new-servers; width: 180px; enabled: root.new-kind == 1; }
+                                NetField { label: "Programs"; help: "One per line: the programs that connect (often a service, not the app you open)."; help2: "* = a folder that changes with updates, e.g. C:\\Program Files\\NordVPN\\*\\nordvpn-service-app.exe";
+                                    TextEdit { text <=> root.new-exe; height: 76px; font-size: 12px; }
+                                    Button { text: "Pick running..."; clicked => { root.pick-load(0); } }
+                                }
+                                NetField { label: "Tunnel adapters"; help: "Its own virtual adapters, by description; comma-separated, * wildcard. Never blocked.";
+                                    LineEdit { placeholder-text: "e.g. NordLynx*, OpenVPN Data Channel Offload*"; text <=> root.new-adapter; }
+                                    Button { text: "Pick..."; clicked => { root.pick-load(1); } }
+                                }
+                                NetField { label: "Ports"; help: "For tunnels inside Windows (NordLynx, WireGuard: udp 51820): any program, off its side."; help2: "Not needed for Tailscale. 53, 80, 443 are refused.";
+                                    LineEdit { placeholder-text: "e.g. udp 51820 (comma-separated entries: udp 51820, tcp 1194)"; text <=> root.new-ports; }
+                                }
+                                NetField { label: "Servers"; help: "Own server routes only: fixed addresses (a.b.c.d or a.b.c.d/n)."; help2: "Usually empty: Keel picks up the VPN's own server routes.";
+                                    LineEdit { placeholder-text: "a.b.c.d, ..."; text <=> root.new-servers; enabled: root.new-kind == 1; }
+                                }
+                                if root.pick-open : Rectangle {
+                                    border-width: 1px; border-color: Palette.border; border-radius: 6px;
+                                    VerticalLayout { padding: 8px; spacing: 6px;
+                                        HorizontalLayout { spacing: 8px;
+                                            Text { text: root.pick-kind == 0 ? "Running programs (click to add)" : "Network adapters (click to add)"; font-weight: 600; vertical-alignment: center; }
+                                            LineEdit { placeholder-text: "Filter"; text <=> root.pick-filter; edited => { root.pick-filter-changed(); } }
+                                            Button { text: "Close"; clicked => { root.pick-open = false; } }
+                                        }
+                                        ListView { height: 240px;
+                                            for r in root.pick-rows : Rectangle {
+                                                height: 40px;
+                                                background: ta.has-hover ? Palette.border.with-alpha(0.35) : transparent;
+                                                ta := TouchArea { clicked => { root.pick-choose(r.value); } }
+                                                VerticalLayout { padding-left: 6px; padding-right: 6px; alignment: center;
+                                                    Text { text: r.title; font-weight: 600; overflow: elide; }
+                                                    Text { text: r.sub; font-size: 11px; color: Palette.foreground.with-alpha(0.6); overflow: elide; }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 HorizontalLayout { spacing: 8px; alignment: start;
-                                    Button { text: "Add"; primary: true; clicked => { root.vpn-add(); root.net-dirty = true; } }
-                                    Button { text: "Cancel"; clicked => { root.add-open = false; } }
+                                    Button { text: root.edit-index < 0 ? "Add" : "Done"; primary: true; clicked => { root.vpn-add(); } }
+                                    Button { text: "Cancel"; clicked => { root.add-open = false; root.pick-open = false; } }
                                 }
                             }
                         }
                     }
 
+                    // Destination routes.
+                    Card {
+                        VerticalLayout { padding: 14px; spacing: 8px;
+                            Text { text: "ROUTES"; font-size: 11px; font-weight: 700; color: Palette.foreground.with-alpha(0.6); }
+                            Text { text: "Send these destinations over a fixed side, whatever Internet over says (a.b.c.d or a.b.c.d/n)."; wrap: word-wrap; font-size: 12px; color: Palette.foreground.with-alpha(0.65); }
+                            for r[i] in root.route-list : HorizontalLayout { spacing: 10px;
+                                Text { text: r.prefix; horizontal-stretch: 1; vertical-alignment: center; }
+                                Text { text: "over"; vertical-alignment: center; }
+                                ComboBox { model: ["Wi-Fi", "LAN"]; current-index: r.via; width: 100px; selected => { root.route-set(i, self.current-index); } }
+                                Button { text: "Remove"; clicked => { root.route-remove-at(i); } }
+                            }
+                            HorizontalLayout { spacing: 10px;
+                                LineEdit { placeholder-text: "e.g. 10.20.0.0/16"; text <=> root.new-route; }
+                                ComboBox { model: ["Wi-Fi", "LAN"]; current-index <=> root.new-route-via; width: 100px; }
+                                Button { text: "Add"; clicked => { root.route-add(); } }
+                            }
+                        }
+                    }
+
                     HorizontalLayout { spacing: 8px; alignment: start;
-                        Button { text: "Save and apply"; primary: true; enabled: !root.busy; clicked => { root.net-save(); root.net-dirty = false; } }
+                        Button { text: "Save and apply"; primary: true; enabled: !root.busy; clicked => { root.net-save(); } }
                         Button { text: "Re-apply"; enabled: !root.busy; clicked => { root.net-reapply(); } }
                         Text { text: root.net-dirty ? "Unsaved changes" : ""; vertical-alignment: center; color: #b45309; }
                     }

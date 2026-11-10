@@ -28,7 +28,8 @@ impl std::fmt::Display for Side {
 pub enum VpnKind {
     /// Binds to the interface with the best `0.0.0.0/0` route (Tailscale, WireGuard, NordLynx).
     DefaultRoute,
-    /// Connects to fixed servers (`servers`); they get host routes via `via`.
+    /// Routes its own servers (NordVPN, OpenVPN): the listed `servers`, plus the host routes it
+    /// adds itself while its tunnel is up, get a route via `via`.
     Server,
 }
 
@@ -37,22 +38,77 @@ pub enum VpnKind {
 pub struct Vpn {
     pub name: String,
     pub kind: VpnKind,
-    /// The program whose traffic the kill switch blocks off `via`.
+    /// The program whose traffic the kill switch blocks off `via` (first of `all_programs()`).
     pub exe: String,
-    /// Its tunnel adapter, by description (`*` wildcards); never blocked.
+    /// More programs for the kill switch; `*` matches one folder level (a version folder).
+    pub programs: Vec<String>,
+    /// Its tunnel adapters, by description (`*` wildcards, comma-separated); never blocked.
     pub adapter: String,
     pub via: Side,
     pub kill_switch: bool,
     /// `Server` VPNs: server addresses (`a.b.c.d` or `a.b.c.d/n`).
     pub servers: Vec<String>,
+    /// Remote ports the kill switch blocks for every program (`udp 51820`): tunnels in the kernel
+    /// (NordLynx, WireGuard) send from Windows itself, not from a program.
+    pub ports: Vec<String>,
 }
 
 impl Default for Vpn {
     fn default() -> Self {
-        Self { name: String::new(), kind: VpnKind::DefaultRoute, exe: String::new(), adapter: String::new(),
-               via: Side::Wifi, kill_switch: false, servers: Vec::new() }
+        Self { name: String::new(), kind: VpnKind::DefaultRoute, exe: String::new(), programs: Vec::new(), adapter: String::new(),
+               via: Side::Wifi, kill_switch: false, servers: Vec::new(), ports: Vec::new() }
     }
 }
+
+impl Vpn {
+    /// `exe` and `programs`, without blanks or repeats.
+    pub fn all_programs(&self) -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for p in std::iter::once(&self.exe).chain(&self.programs) {
+            let p = p.trim().trim_matches('"').to_string();
+            if !p.is_empty() && !v.iter().any(|x| x.eq_ignore_ascii_case(&p)) { v.push(p); }
+        }
+        v
+    }
+    /// Sets `exe` and `programs` from one list.
+    pub fn set_programs(&mut self, list: Vec<String>) {
+        let mut it = list.into_iter();
+        self.exe = it.next().unwrap_or_default();
+        self.programs = it.collect();
+    }
+    pub fn adapter_patterns(&self) -> Vec<String> {
+        self.adapter.split([',', ';']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    }
+    /// Whether `a` is one of its tunnel adapters.
+    pub fn is_tunnel(&self, a: &Adapter) -> bool { self.adapter_patterns().iter().any(|p| glob(p, &a.description)) }
+
+    /// Ready-made entries for the Network page.
+    pub fn presets() -> Vec<Vpn> {
+        vec![
+            Vpn { name: "Tailscale".into(), exe: TAILSCALED.into(), adapter: "Tailscale*".into(), via: Side::Wifi, kill_switch: true, ..Default::default() },
+            Vpn { name: "NordVPN".into(), kind: VpnKind::Server, exe: r"C:\Program Files\NordVPN\nordvpn-service.exe".into(),
+                  programs: vec![r"C:\Program Files\NordVPN\*\nordvpn-service-app.exe".into(),
+                                 r"C:\Program Files\NordVPN\*\Resources\Binaries\64bit\openvpn-nordvpn.exe".into()],
+                  adapter: "NordLynx*, OpenVPN Data Channel Offload*".into(), via: Side::Wifi, kill_switch: true,
+                  ports: vec!["udp 51820".into()], ..Default::default() },
+            Vpn { name: "WireGuard".into(), exe: r"C:\Program Files\WireGuard\wireguard.exe".into(), adapter: "WireGuard Tunnel*".into(),
+                  via: Side::Wifi, kill_switch: true, ports: vec!["udp 51820".into()], ..Default::default() },
+        ]
+    }
+}
+
+/// `udp 51820`, `tcp 1194,1195`, `udp:51820` -> (protocol number, ports). Pure; tested.
+pub fn parse_ports(s: &str) -> Option<(u8, String)> {
+    let s = s.trim().to_lowercase();
+    let (proto, rest) = s.split_once([' ', ':', '/'])?;
+    let proto = match proto.trim() { "udp" => 17, "tcp" => 6, _ => return None };
+    let ports: Vec<u16> = rest.split([',', ' ']).filter(|p| !p.is_empty()).map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    if ports.is_empty() || ports.contains(&0) { return None; }
+    Some((proto, ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")))
+}
+
+/// Ports nobody should block for every program on a side (web, DNS, DHCP, time).
+const COMMON_PORTS: [&str; 6] = ["53", "67", "68", "80", "123", "443"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RouteRule {
@@ -134,7 +190,7 @@ pub fn lan_choices(wired: &[String], picked: &[String]) -> (Vec<String>, Vec<Vec
 
 /// The VPN `tailscale_wifi_only` applies to.
 pub fn is_tailscale(v: &Vpn) -> bool {
-    v.exe.to_lowercase().ends_with("tailscaled.exe") || v.name.eq_ignore_ascii_case("tailscale")
+    v.all_programs().iter().any(|p| p.to_lowercase().ends_with("tailscaled.exe")) || v.name.eq_ignore_ascii_case("tailscale")
 }
 
 // ------------------------------------------------------------------ snapshot
@@ -186,8 +242,12 @@ impl std::fmt::Display for Route {
 pub struct Rule {
     pub name: String,
     pub enabled: bool,
+    /// Empty: every program.
     pub program: String,
     pub aliases: Vec<String>,
+    /// Protocol number (6 TCP, 17 UDP) and remote ports, for port rules.
+    #[serde(default)]
+    pub ports: Option<(u8, String)>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -221,8 +281,9 @@ pub enum Action {
     RestoreMetric { index: u32, alias: String, auto: bool, metric: u32 },
     AddRoute(Route),
     RemoveRoute(Route),
-    /// Create or replace a block rule for `program` on `aliases`, enabled.
-    BlockRule { name: String, program: String, aliases: Vec<String>, outbound: bool },
+    /// Create or replace a block rule for `program` (empty: every program) on `aliases`, enabled;
+    /// with `ports`, only that protocol and those remote ports.
+    BlockRule { name: String, program: String, aliases: Vec<String>, outbound: bool, ports: Option<(u8, String)> },
     DisableRule { name: String },
 }
 
@@ -301,7 +362,7 @@ impl Snapshot {
     /// Where a default-route VPN goes now: the up, non-VPN adapter with the lowest route +
     /// interface metric on `/0` (tailscaled's rule).
     pub fn default_egress(&self, cfg: &Config) -> Option<&Adapter> {
-        let vpn = |a: &Adapter| cfg.vpns.iter().any(|v| !v.adapter.is_empty() && glob(&v.adapter, &a.description))
+        let vpn = |a: &Adapter| cfg.vpns.iter().any(|v| v.is_tunnel(a))
             || a.description.to_lowercase().contains("wintun");
         self.routes.iter().filter(|r| r.len == 0)
             .filter_map(|r| self.adapters.iter().find(|a| a.index == r.index && a.up && !vpn(a)).map(|a| (r.metric + a.metric, a)))
@@ -312,8 +373,29 @@ impl Snapshot {
 /// The loopback pseudo-interface: never blocked (local IPC of the VPN clients).
 fn is_loopback(a: &Adapter) -> bool { a.description.to_lowercase().contains("loopback") }
 
-fn rule_name(v: &Vpn, outbound: bool) -> String {
-    format!("Keel net: {} {}", v.name, if outbound { "out" } else { "in" })
+/// Rule names: `Keel net: <vpn> out|in` for its first program, `... out #2` for the next ones,
+/// `Keel net: <vpn> udp 51820 out` for a port rule.
+fn rule_name(v: &Vpn, what: &str, outbound: bool) -> String {
+    format!("Keel net: {} {}{}", v.name, if what.is_empty() { String::new() } else { format!("{what} ") }, if outbound { "out" } else { "in" })
+}
+fn program_rule_name(v: &Vpn, i: usize, outbound: bool) -> String {
+    let n = rule_name(v, "", outbound);
+    if i == 0 { n } else { format!("{n} #{}", i + 1) }
+}
+
+/// Host routes a `Server` VPN added itself on the wrong side while its tunnel is up: `/32`s via
+/// the gateway of an adapter that is not on `via` (its server, routed by the best route, which
+/// Keel's `/1` splits may have put on the other side). Keel adds the same host route via `via`.
+fn learned_servers(cfg: &Config, snap: &Snapshot, state: &State, v: &Vpn) -> Vec<String> {
+    if v.kind != VpnKind::Server || !snap.adapters.iter().any(|a| a.up && v.is_tunnel(a)) { return Vec::new(); }
+    let other: Vec<u32> = snap.side(cfg, if v.via == Side::Wifi { Side::Lan } else { Side::Wifi }).iter().map(|a| a.index).collect();
+    let mut out: Vec<String> = snap.routes.iter()
+        .filter(|r| r.len == 32 && other.contains(&r.index) && r.next_hop != ANY && snap.gateway(r.index) == Some(r.next_hop))
+        .filter(|r| !state.routes.iter().any(|o| o.prefix == r.prefix && o.len == 32 && o.index == r.index))
+        .map(|r| format!("{}/32", r.prefix)).collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The routes Keel owns in `snap`: the ones it recorded, plus `/1` splits on Wi-Fi / LAN adapters
@@ -366,7 +448,13 @@ pub fn plan(cfg: &Config, snap: &Snapshot, state: &State) -> Plan {
             for e in exits { for s in SPLITS { want.push(route(e, s)); } }
         }
         let mut targets: Vec<(String, Side)> = cfg.routes.iter().map(|r| (r.prefix.clone(), r.via)).collect();
-        for v in vpns.iter().filter(|v| v.kind == VpnKind::Server) { for s in &v.servers { targets.push((s.clone(), v.via)); } }
+        for v in vpns.iter().filter(|v| v.kind == VpnKind::Server) {
+            for s in &v.servers { targets.push((s.clone(), v.via)); }
+            for s in learned_servers(cfg, snap, state, v) {
+                p.notes.push(format!("{}: server {s} moved to {}", v.name, v.via));
+                targets.push((s, v.via));
+            }
+        }
         for (t, side) in targets {
             match (parse_prefix(&t), snap.exits(cfg, side).first()) {
                 (None, _) => p.problems.push(format!("bad prefix {t}")),
@@ -380,29 +468,45 @@ pub fn plan(cfg: &Config, snap: &Snapshot, state: &State) -> Plan {
     for r in &have { if !want.iter().any(|w| same(w, r)) { p.actions.push(Action::RemoveRoute(*r)); } }
     for w in &want { if !snap.routes.iter().any(|r| same(w, r)) { p.actions.push(Action::AddRoute(*w)); } }
 
-    // Kill switches.
+    // Kill switches: one rule per program and direction, one outbound rule per port entry (any
+    // program). Every other enabled rule of Keel's (a removed VPN, program or port) is disabled.
+    let mut wanted: Vec<String> = Vec::new();
     for v in &vpns {
-        let names = [(rule_name(v, true), true), (rule_name(v, false), false)];
-        if cfg.enabled && v.kill_switch {
-            let keep: Vec<u32> = snap.side(cfg, v.via).iter().map(|a| a.index).collect();
-            if keep.is_empty() {
-                p.problems.push(format!("{}: no {} adapter found; kill switch left as it is", v.name, v.via));
-                continue;
-            }
-            let mut block: Vec<String> = snap.adapters.iter()
-                .filter(|a| !keep.contains(&a.index) && !is_loopback(a) && !(!v.adapter.is_empty() && glob(&v.adapter, &a.description)))
-                .map(|a| a.alias.clone()).collect();
-            block.sort();
-            if block.is_empty() { continue; } // an empty list would mean "every interface"
-            for (name, outbound) in names {
-                let ok = snap.rules.iter().any(|r| r.name == name && r.enabled && r.aliases == block && r.program.eq_ignore_ascii_case(&v.exe));
-                if !ok { p.actions.push(Action::BlockRule { name, program: v.exe.clone(), aliases: block.clone(), outbound }); }
-            }
-        } else {
-            for (name, _) in names {
-                if snap.rules.iter().any(|r| r.name == name && r.enabled) { p.actions.push(Action::DisableRule { name }); }
+        if !(cfg.enabled && v.kill_switch) { continue; }
+        let keep: Vec<u32> = snap.side(cfg, v.via).iter().map(|a| a.index).collect();
+        let prefix = format!("Keel net: {} ", v.name);
+        if keep.is_empty() {
+            p.problems.push(format!("{}: no {} adapter found; kill switch left as it is", v.name, v.via));
+            wanted.extend(snap.rules.iter().filter(|r| r.name.starts_with(&prefix)).map(|r| r.name.clone()));
+            continue;
+        }
+        let mut block: Vec<String> = snap.adapters.iter()
+            .filter(|a| !keep.contains(&a.index) && !is_loopback(a) && !v.is_tunnel(a))
+            .map(|a| a.alias.clone()).collect();
+        block.sort();
+        if block.is_empty() { continue; } // an empty list would mean "every interface"
+        let mut rules: Vec<(String, String, bool, Option<(u8, String)>)> = Vec::new();
+        for (i, prog) in v.all_programs().iter().enumerate() {
+            for outbound in [true, false] { rules.push((program_rule_name(v, i, outbound), prog.clone(), outbound, None)); }
+        }
+        for spec in &v.ports {
+            match parse_ports(spec) {
+                None => p.problems.push(format!("{}: bad port entry \"{spec}\" (e.g. udp 51820)", v.name)),
+                Some((_, ports)) if ports.split(',').any(|x| COMMON_PORTS.contains(&x)) =>
+                    p.problems.push(format!("{}: \"{spec}\" would block common traffic for every program; left out", v.name)),
+                Some(pp) => rules.push((rule_name(v, &spec.trim().to_lowercase().replace(':', " "), true), String::new(), true, Some(pp))),
             }
         }
+        if rules.is_empty() { p.problems.push(format!("{}: the kill switch has no program or port to block", v.name)); }
+        for (name, program, outbound, ports) in rules {
+            let ok = snap.rules.iter().any(|r| r.name == name && r.enabled && r.aliases == block
+                && r.program.eq_ignore_ascii_case(&program) && r.ports == ports);
+            if !ok { p.actions.push(Action::BlockRule { name: name.clone(), program, aliases: block.clone(), outbound, ports }); }
+            wanted.push(name);
+        }
+    }
+    for r in snap.rules.iter().filter(|r| r.enabled && !wanted.contains(&r.name)) {
+        p.actions.push(Action::DisableRule { name: r.name.clone() });
     }
     p
 }
@@ -600,8 +704,8 @@ mod tests {
         snap.policy = Some(0);
         snap.adapters[0].metric = 1; snap.adapters[0].auto_metric = false;
         for a in &p.actions { if let Action::AddRoute(x) = a { snap.routes.push(*x); } }
-        snap.rules = p.actions.iter().filter_map(|a| if let Action::BlockRule { name, program, aliases, .. } = a {
-            Some(Rule { name: name.clone(), enabled: true, program: program.clone(), aliases: aliases.clone() }) } else { None }).collect();
+        snap.rules = p.actions.iter().filter_map(|a| if let Action::BlockRule { name, program, aliases, ports, .. } = a {
+            Some(Rule { name: name.clone(), enabled: true, program: program.clone(), aliases: aliases.clone(), ports: ports.clone() }) } else { None }).collect();
         assert_eq!(plan(&cfg, &snap, &state).actions, vec![]);
         assert_eq!(state.metrics["Wi-Fi"], (true, 40));
         assert_eq!(state.policy_old, None);
@@ -611,6 +715,77 @@ mod tests {
         assert_eq!(off.actions.iter().filter(|a| matches!(a, Action::RemoveRoute(_))).count(), 2);
         assert_eq!(off.actions.iter().filter(|a| matches!(a, Action::DisableRule { .. })).count(), 2);
         assert!(!off.actions.contains(&Action::SetPolicy));
+    }
+
+    #[test]
+    fn port_entries() {
+        assert_eq!(parse_ports("udp 51820"), Some((17, "51820".into())));
+        assert_eq!(parse_ports("TCP:1194, 1195"), Some((6, "1194,1195".into())));
+        assert_eq!(parse_ports("51820"), None);
+        assert_eq!(parse_ports("udp x"), None);
+    }
+
+    /// NordVPN on Wi-Fi while general internet goes over the LAN, NordLynx connected.
+    fn nord_snapshot() -> (Config, Snapshot) {
+        let mut nord = Vpn::presets()[1].clone();
+        nord.programs = vec![r"C:\Program Files\NordVPN\8.15.2.0\nordvpn-service-app.exe".into()];
+        let cfg = Config { vpns: vec![nord], ..Config::example() };
+        let mut snap = both_up();
+        snap.adapters.push(ad(37, "NordLynx", "NordLynx Tunnel", true, 1));
+        // NordVPN routed its server by the best route: Keel's /1 split on the LAN.
+        snap.routes.push(r("0.0.0.0/1", 7, "192.168.235.1", 0));
+        snap.routes.push(r("128.0.0.0/1", 7, "192.168.235.1", 0));
+        snap.routes.push(r("185.1.2.3/32", 7, "192.168.235.1", 0));
+        snap.routes.push(r("192.168.235.20/32", 7, "0.0.0.0", 0)); // the LAN's own address: on-link
+        (cfg, snap)
+    }
+
+    #[test]
+    fn nordvpn_kill_switch_blocks_its_service_and_the_kernel_port() {
+        let (cfg, snap) = nord_snapshot();
+        let p = plan(&cfg, &snap, &State::default());
+        assert!(p.problems.is_empty(), "{:?}", p.problems);
+        let rules: Vec<(String, String, Option<(u8, String)>, Vec<String>)> = p.actions.iter().filter_map(|a| match a {
+            Action::BlockRule { name, program, ports, aliases, .. } => Some((name.clone(), program.clone(), ports.clone(), aliases.clone())), _ => None }).collect();
+        let names: Vec<&str> = rules.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(names, ["Keel net: NordVPN out", "Keel net: NordVPN in", "Keel net: NordVPN out #2", "Keel net: NordVPN in #2", "Keel net: NordVPN udp 51820 out"]);
+        assert!(rules[0].1.ends_with("nordvpn-service.exe"));
+        assert_eq!((rules[4].1.as_str(), rules[4].2.clone()), ("", Some((17, "51820".into()))));
+        // Its own tunnel and the Wi-Fi are never blocked.
+        assert!(rules.iter().all(|r| !r.3.contains(&"NordLynx".to_string()) && !r.3.contains(&"Wi-Fi".to_string())));
+        assert!(rules[0].3.contains(&"Ethernet".to_string()));
+    }
+
+    #[test]
+    fn nordvpn_server_route_moves_to_its_side() {
+        let (cfg, snap) = nord_snapshot();
+        let p = plan(&cfg, &snap, &State::default());
+        assert_eq!(adds(&p), ["185.1.2.3/32 via 192.168.1.1 (if 12)"]);
+        // Tunnel down: nothing learned (other host routes on the LAN are left alone).
+        let mut down = snap.clone();
+        down.adapters.last_mut().unwrap().up = false;
+        assert!(adds(&plan(&cfg, &down, &State::default())).is_empty());
+        // A default-route VPN never learns routes.
+        let mut dr = cfg.clone();
+        dr.vpns[0].kind = VpnKind::DefaultRoute;
+        assert!(adds(&plan(&dr, &snap, &State::default())).is_empty());
+    }
+
+    #[test]
+    fn removed_vpn_and_common_ports() {
+        let (mut cfg, mut snap) = nord_snapshot();
+        snap.rules.push(Rule { name: "Keel net: Old VPN out".into(), enabled: true, program: "x.exe".into(), aliases: vec!["Ethernet".into()], ports: None });
+        cfg.vpns[0].ports.push("tcp 443".into());
+        let p = plan(&cfg, &snap, &State::default());
+        assert!(p.actions.contains(&Action::DisableRule { name: "Keel net: Old VPN out".into() }));
+        assert!(p.problems.iter().any(|x| x.contains("tcp 443")));
+        assert!(!p.actions.iter().any(|a| matches!(a, Action::BlockRule { name, .. } if name.contains("443"))));
+    }
+
+    #[test]
+    fn old_entries_keep_their_programs() {
+        let v: Vpn = toml::from_str("name = \"N\"\nkind = \"server\"\nexe = 'C:\\a.exe'\nadapter = \"A*, B*\"\n").unwrap();
+        assert_eq!((v.all_programs(), v.adapter_patterns()), (vec![r"C:\a.exe".to_string()], vec!["A*".to_string(), "B*".into()]));
     }
 
     #[test]

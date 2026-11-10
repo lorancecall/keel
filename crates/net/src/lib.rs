@@ -55,13 +55,55 @@ pub fn contested() -> Vec<String> { CONTEST.lock().unwrap().problems(std::time::
 
 pub struct Report { pub cfg: Config, pub snap: Snapshot, pub state: State, pub plan: Plan }
 
-/// Reads everything and plans (no admin needed).
+/// Reads everything and plans (no admin needed). Programs with `*` are planned as the files they
+/// match now (a VPN's version folder changes with its updates); `cfg` keeps the patterns.
 pub fn report() -> Result<Report> {
     let cfg = load_config()?;
     let snap = sys::snapshot()?;
     let state = load_state();
-    let plan = model::plan(&cfg, &snap, &state);
+    let (expanded, missing) = expand_programs(&cfg);
+    let mut plan = model::plan(&expanded, &snap, &state);
+    plan.notes.extend(missing.into_iter().map(|m| format!("no program matches {m}")));
     Ok(Report { cfg, snap, state, plan })
+}
+
+/// The config with each VPN's `*` programs replaced by the files they match, and the patterns
+/// that match nothing.
+pub fn expand_programs(cfg: &Config) -> (Config, Vec<String>) {
+    let mut out = cfg.clone();
+    let mut missing = Vec::new();
+    for v in &mut out.vpns {
+        let mut list = Vec::new();
+        for p in v.all_programs() {
+            if !p.contains('*') { list.push(p); continue; }
+            let found = expand_path(&p);
+            if found.is_empty() { missing.push(p); }
+            list.extend(found);
+        }
+        v.set_programs(list);
+    }
+    (out, missing)
+}
+
+/// Files matching `pat`, where `*` matches within one path component.
+fn expand_path(pat: &str) -> Vec<String> {
+    let parts: Vec<&str> = pat.split(['\\', '/']).filter(|s| !s.is_empty()).collect();
+    let Some((first, rest)) = parts.split_first() else { return Vec::new() };
+    let mut at = vec![std::path::PathBuf::from(format!("{first}\\"))];
+    for part in rest {
+        let mut next = Vec::new();
+        for dir in &at {
+            if !part.contains('*') { next.push(dir.join(part)); continue; }
+            let Ok(rd) = std::fs::read_dir(dir) else { continue };
+            for e in rd.flatten() {
+                if model::glob(part, &e.file_name().to_string_lossy()) { next.push(e.path()); }
+            }
+        }
+        at = next;
+    }
+    let mut v: Vec<String> = at.into_iter().filter(|p| p.is_file()).map(|p| p.display().to_string()).collect();
+    v.sort();
+    v
 }
 
 /// Brings the system to the config (admin): records originals first, then runs each action;

@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn kill_switch_is_never_held() {
         let t0 = Instant::now();
-        let rule = Action::BlockRule { name: "Keel net: Tailscale out".into(), program: "t.exe".into(), aliases: vec!["Ethernet".into()], outbound: true };
+        let rule = Action::BlockRule { name: "Keel net: Tailscale out".into(), program: "t.exe".into(), aliases: vec!["Ethernet".into()], outbound: true, ports: None };
         let mut c = Contest::default();
         for m in 0..3u64 { let _ = c.applied(&rule, t0 + Duration::from_secs(m)); }
         assert_eq!(c.filter(&[rule.clone()], t0 + Duration::from_secs(5)).len(), 1);

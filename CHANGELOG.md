@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.45
+
+- Network page, VPN form: Add / Done closes and empties the form and leaves a note under the VPN
+  list ("NordVPN changed. Not saved yet: Save and apply."), cleared by the next save. A mistake
+  (missing name, bad port, a name already taken) shows in red inside the form instead of only in
+  the status line. Picking a preset whose name already exists (e.g. NordVPN from "+ Add VPN")
+  turns the form into editing that VPN instead of failing at Add.
+
+## 0.1.44
+
+- Network page: the VPN form's Done button was hidden under the Routes card (wrapped help text
+  was measured as one line), so an edit could not be committed and Save and apply sent the old
+  entry. Help is now one or two unwrapped lines per field, Done / Cancel sit next to the form's
+  title, and Save and apply also commits an open form (a form with a mistake stops the save).
+
+## 0.1.43
+
+- Network kill switch: a VPN can have several programs (one rule per program and direction;
+  `*` stands for a folder that changes with updates) and port entries (`udp 51820`), blocked for
+  every program off its side. Tunnels inside Windows itself (NordLynx, WireGuard) send from the
+  kernel, so a rule on the app alone never stopped them. Rules of a removed VPN, program or port
+  are turned off. Common ports (53, 67, 68, 80, 123, 443) are refused.
+- "Own server routes" VPNs (NordVPN, OpenVPN): while their tunnel is up, the host route they add to
+  their server on the other side is copied to their own side, so general internet over the LAN no
+  longer pulls them onto it.
+- Tunnel adapters: several patterns, comma-separated.
+- Network page: every VPN can be edited (Edit), with a line under each field saying what it is
+  for; ready-made entries (Tailscale, NordVPN, WireGuard); programs picked from the running ones
+  and tunnel adapters from the adapter list; "Tailscale only on Wi-Fi" switch; destination routes
+  added, changed and removed.
+- `keel net status` shows each rule's program or ports.
+
 ## 0.1.42
 
 - The Legion Space option is split in two, since only half of it can work with the eGPU monitor
