@@ -45,9 +45,14 @@ and a small amount of RAM working together: one service, a tray icon and a main 
 - **eGPU tuning.** Live power, temperature, clocks, usage and VRAM; power limit, clock ceilings
   and 3D settings on NVIDIA; Radeon features; a short stress test. Only what the card supports is
   shown. A hung AMD Adrenalin is restarted (automatically or from the tray).
-- **Also:** memory history with leak detection, a tray panel, light and dark themes, and optional
-  network routing (internet over Wi-Fi or LAN, a side and kill switch per VPN; any wired adapter,
-  any Windows language). Network routing is off until you set it up.
+- **Network routing (optional, off until you set it up).** General internet over Wi-Fi or LAN,
+  and a side for each VPN's own connection. A VPN's kill switch blocks its programs, and the port
+  of a tunnel that runs inside Windows (NordLynx, WireGuard: `udp 51820`), on every other adapter,
+  so it goes offline instead of falling back to the other side. A VPN that routes its own server
+  (NordVPN, OpenVPN) has that route moved to its side. Ready-made entries for Tailscale, NordVPN
+  and WireGuard; programs are picked from the running ones; any wired adapter, any Windows
+  language. See [Network](#network).
+- **Also:** memory history with leak detection, a tray panel, light and dark themes.
 
 ## Scenarios
 
@@ -60,6 +65,24 @@ and a small amount of RAM working together: one service, a tray icon and a main 
 | **Game running** | Ollama models are unloaded first. NVIDIA: integer scaling follows the game's mode and returns afterwards. AMD: the driver applies scaling only at a mode change, so it stays as set; run the game at an exact divisor. |
 | **eGPU unplugged** | Ollama models are unloaded; the other eGPU settings wait for the next attach. |
 | **Switching NVIDIA <-> AMD** | The new card's profile applies; the AMD driver stays bound to the AMD card only. |
+
+## Network
+
+The Network page sets it up; nothing changes until you turn Routing on and press Save and apply.
+Each VPN has:
+
+| Field | What it is |
+|---|---|
+| Type | *Follows the default route* (Tailscale, WireGuard): Keel gives its side the lowest metric. *Own server routes* (NordVPN, OpenVPN): the route it adds to its server is copied to its side while the tunnel is up. |
+| Over | The side (Wi-Fi or LAN) its own connection uses. |
+| Kill switch | Blocks its programs and ports on every adapter except that side and its tunnel. |
+| Programs | The programs that make the connection, often a service rather than the app you open. `*` stands for a folder that changes with updates. "Pick running..." lists the running ones. |
+| Tunnel adapters | Its own virtual adapters (comma-separated, `*` wildcard); never blocked. |
+| Ports | For tunnels inside Windows, which no program rule catches (NordLynx, WireGuard: `udp 51820`). Blocked for every program off its side; 53, 80, 443 are refused. Not needed for Tailscale. |
+| Servers | Fixed server addresses for *Own server routes*; usually empty. |
+
+*Tailscale only on Wi-Fi* keeps Tailscale off the wired LAN with its kill switch on, whatever its
+own row says. **Routes** send chosen destinations over a fixed side.
 
 ## Install
 
@@ -99,7 +122,7 @@ Keel runs a service as LocalSystem. All it may change:
 | eGPU | power limit and clock ceilings (NVIDIA), Radeon features, NVIDIA 3D settings, display modes and scaling, the AMD eGPU's driver binding, a Windows Update block for that driver | only what you set; profiles start at the driver defaults |
 | eGPU | stops / starts NVIDIA's helper services | only if you turn that option on |
 | On-demand apps / AI and game mode | service start types, scheduled tasks, startup entries of app families you pick; ends their processes | only families you pick; never Windows core, GPU drivers, the handheld vendor's or security software |
-| Network | interface metrics, routes, firewall rules for VPN kill switches | only after you turn Network on and set it up |
+| Network | interface metrics, routes (including a copy of a VPN's own server route), firewall rules for VPN kill switches (by program, or by port for any program) | only after you turn Network on and set it up |
 
 - Every change is recorded first and put back by "Back to normal", by turning the feature off, or
   by uninstalling Keel.
