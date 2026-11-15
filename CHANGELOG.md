@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.46
+
+- Network VPN editor: optional LAN relay allowlist with exact Ethernet selection, private IPv4
+  Add/Remove controls, explicit access warning acknowledgment, and empty defaults.
+- Relay exceptions retain Wi-Fi external transport protection; all other IPv4 destinations and
+  IPv6 remain blocked. Windows-compatible CIDRs avoid rejected broad firewall address ranges.
+- Old kill-switch rules stay until replacement rules are verified. Clearing the allowlist restores
+  full isolation. The planner compares actual remote-address filters, not just rule descriptions.
+- Network Save retains edits on failure, reports pending application, and detects services too old
+  to support relay configuration.
+
 ## 0.1.45
 
 - Network page, VPN form: Add / Done closes and empties the form and leaves a note under the VPN

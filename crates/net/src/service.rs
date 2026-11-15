@@ -108,6 +108,8 @@ pub enum Request {
 #[serde(default)]
 pub struct Reply {
     pub ok: bool,
+    /// Capability flag prevents a new GUI from sending exceptions to an older service.
+    pub relay_supported: bool,
     pub message: String,
     pub config: Option<Config>,
     pub summary: String,
@@ -122,7 +124,7 @@ pub struct Reply {
 }
 
 fn status(ok: bool, message: impl Into<String>) -> Reply {
-    let mut r = Reply { ok, message: message.into(), ..Default::default() };
+    let mut r = Reply { ok, relay_supported: true, message: message.into(), ..Default::default() };
     match crate::report() {
         Ok(rep) => {
             r.summary = crate::model::summary(&rep.cfg, &rep.snap, &rep.plan);
@@ -142,6 +144,7 @@ fn status(ok: bool, message: impl Into<String>) -> Reply {
 
 /// Writes `net.toml` (service only; the folder is admin-only).
 pub fn save_config(cfg: &Config) -> Result<()> {
+    crate::model::validate_relays(cfg).map_err(anyhow::Error::msg)?;
     std::fs::create_dir_all(keel_core::paths::data_dir())?;
     let p = crate::config_path();
     let tmp = p.with_extension("toml.tmp");
@@ -160,7 +163,8 @@ fn change(f: impl FnOnce(&mut Config)) -> Result<String> {
     }
     let _w = WORK.lock().unwrap();
     let (ok, bad) = crate::reconcile()?;
-    Ok(format!("saved and applied: {ok} change(s){}", if bad > 0 { format!(", {bad} failed (see service.log)") } else { String::new() }))
+    anyhow::ensure!(bad == 0, "saved, but {bad} change(s) failed; see service.log");
+    Ok(format!("saved and applied: {ok} change(s)"))
 }
 
 fn answer(req: Request) -> Reply {
@@ -190,4 +194,14 @@ pub fn handler() -> keel_core::pipe::Handler {
 /// Client side (tray, main window).
 pub fn call(req: &Request) -> Result<Reply> {
     Ok(serde_json::from_value(keel_core::pipe::call(FEATURE, &serde_json::to_value(req)?)?)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn old_service_reply_has_no_relay_capability() {
+        let old: Reply = serde_json::from_str(r#"{"ok":true}"#).unwrap();
+        assert!(!old.relay_supported);
+    }
 }

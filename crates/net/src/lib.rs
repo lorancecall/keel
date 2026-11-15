@@ -132,6 +132,19 @@ pub fn reconcile() -> Result<(usize, usize)> {
         if let Action::RemoveRoute(x) = a { kept.routes.retain(|o| o != x && !(o.prefix == x.prefix && o.len == x.len && o.index == x.index)); }
     }
     save_state(&kept)?;
+    // Retire old blocks only after a fresh snapshot confirms the replacements.
+    // Failed replacements leave old isolation intact.
+    if bad == 0 {
+        let next = report()?;
+        if next.plan.actions.iter().all(|a| matches!(a, Action::DisableRule { .. })) {
+            for a in &next.plan.actions {
+                match sys::apply(a) {
+                    Ok(()) => { ok += 1; log(format!("{a}")); }
+                    Err(e) => { bad += 1; log(format!("FAILED {a}: {e:#}")); }
+                }
+            }
+        }
+    }
     write_status(&report()?);
     Ok((ok, bad))
 }

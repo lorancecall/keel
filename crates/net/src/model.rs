@@ -10,8 +10,8 @@
 //! - Destination rules and VPN servers get their own routes via a side's gateway.
 //! - Kill switch per VPN: firewall rules block its program on every adapter except its side and its
 //!   own tunnel, so it goes offline instead of falling back to the other side.
-//! - With `tailscale_wifi_only`, Tailscale never uses the wired LAN (e.g. a company network):
-//!   forced to Wi-Fi with the kill switch, whatever its own entry says.
+//! - With `tailscale_wifi_only`, external Tailscale transport stays on Wi-Fi with the kill switch.
+//!   Exact private LAN relay hosts are opt-in exceptions on one named Ethernet adapter.
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 
@@ -51,12 +51,16 @@ pub struct Vpn {
     /// Remote ports the kill switch blocks for every program (`udp 51820`): tunnels in the kernel
     /// (NordLynx, WireGuard) send from Windows itself, not from a program.
     pub ports: Vec<String>,
+    /// Exact physical Ethernet alias for opt-in private IPv4 relay exceptions.
+    pub relay_interface: String,
+    /// Exact RFC1918 hosts; empty preserves full isolation.
+    pub relay_hosts: Vec<String>,
 }
 
 impl Default for Vpn {
     fn default() -> Self {
         Self { name: String::new(), kind: VpnKind::DefaultRoute, exe: String::new(), programs: Vec::new(), adapter: String::new(),
-               via: Side::Wifi, kill_switch: false, servers: Vec::new(), ports: Vec::new() }
+               via: Side::Wifi, kill_switch: false, servers: Vec::new(), ports: Vec::new(), relay_interface: String::new(), relay_hosts: Vec::new() }
     }
 }
 
@@ -193,6 +197,8 @@ pub fn is_tailscale(v: &Vpn) -> bool {
     v.all_programs().iter().any(|p| p.to_lowercase().ends_with("tailscaled.exe")) || v.name.eq_ignore_ascii_case("tailscale")
 }
 
+fn all_addresses() -> String { "*".into() }
+
 // ------------------------------------------------------------------ snapshot
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -248,6 +254,13 @@ pub struct Rule {
     /// Protocol number (6 TCP, 17 UDP) and remote ports, for port rules.
     #[serde(default)]
     pub ports: Option<(u8, String)>,
+    #[serde(default = "all_addresses")]
+    pub remote_addresses: String,
+    /// Actual firewall direction and scope validity; unknown old snapshots never prove protection.
+    #[serde(default)]
+    pub outbound: bool,
+    #[serde(default)]
+    pub scope_valid: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -283,7 +296,7 @@ pub enum Action {
     RemoveRoute(Route),
     /// Create or replace a block rule for `program` (empty: every program) on `aliases`, enabled;
     /// with `ports`, only that protocol and those remote ports.
-    BlockRule { name: String, program: String, aliases: Vec<String>, outbound: bool, ports: Option<(u8, String)> },
+    BlockRule { name: String, program: String, aliases: Vec<String>, outbound: bool, ports: Option<(u8, String)>, remote_addresses: String },
     DisableRule { name: String },
 }
 
@@ -373,14 +386,134 @@ impl Snapshot {
 /// The loopback pseudo-interface: never blocked (local IPC of the VPN clients).
 fn is_loopback(a: &Adapter) -> bool { a.description.to_lowercase().contains("loopback") }
 
-/// Rule names: `Keel net: <vpn> out|in` for its first program, `... out #2` for the next ones,
-/// `Keel net: <vpn> udp 51820 out` for a port rule.
-fn rule_name(v: &Vpn, what: &str, outbound: bool) -> String {
-    format!("Keel net: {} {}{}", v.name, if what.is_empty() { String::new() } else { format!("{what} ") }, if outbound { "out" } else { "in" })
+/// Validate relay input without changing configuration or firewall state.
+/// A missing adapter is a runtime fail-closed condition, not permission to use another adapter.
+pub fn validate_relay(v: &Vpn, snap: Option<&Snapshot>) -> Result<Vec<Ipv4Addr>, String> {
+    if v.relay_hosts.is_empty() { return Ok(Vec::new()); }
+    if v.via != Side::Wifi || !v.kill_switch { return Err("LAN relay requires Wi-Fi and the kill switch".into()); }
+    if v.all_programs().is_empty() { return Err("LAN relay requires a VPN program".into()); }
+    if v.relay_interface.is_empty() || v.relay_interface.contains(['*', '?', ';', '|']) {
+        return Err("select an exact Ethernet adapter".into());
+    }
+    let mut hosts = Vec::new();
+    for host in &v.relay_hosts {
+        let ip = host.parse::<Ipv4Addr>().map_err(|_| format!("invalid private IPv4 host: {host}"))?;
+        if !ip.is_private() { return Err(format!("not an RFC1918 private IPv4 host: {host}")); }
+        hosts.push(ip);
+    }
+    hosts.sort_unstable(); hosts.dedup();
+    if let Some(snap) = snap {
+        if !snap.adapters.iter().any(|a| a.alias == v.relay_interface && a.kind == Kind::Wired && !v.is_tunnel(a)) {
+            return Err("the selected Ethernet adapter is unavailable".into());
+        }
+    }
+    Ok(hosts)
 }
-fn program_rule_name(v: &Vpn, i: usize, outbound: bool) -> String {
-    let n = rule_name(v, "", outbound);
-    if i == 0 { n } else { format!("{n} #{}", i + 1) }
+
+/// Syntax validation for persisted settings; Tailscale's enforced Wi-Fi policy remains authoritative.
+pub fn validate_relays(cfg: &Config) -> Result<(), String> {
+    for v in &cfg.vpns {
+        let mut v = v.clone();
+        if cfg.tailscale_wifi_only && is_tailscale(&v) { v.via = Side::Wifi; v.kill_switch = true; }
+        validate_relay(&v, None).map_err(|e| format!("{}: {e}", v.name))?;
+    }
+    Ok(())
+}
+
+/// One kill-switch rule: name, program (empty: every program), outbound, ports.
+struct RuleSpec {
+    name: String, program: String, outbound: bool, ports: Option<(u8, String)>,
+    aliases: Vec<String>, remote_addresses: String,
+}
+
+/// Emit an inclusive IPv4 interval as aligned CIDRs, rather than one very broad
+/// address range. Use explicit /1 IPv6 blocks below as well: avoid /0 special
+/// handling in the Windows Firewall address parser. Coverage is unchanged.
+fn ipv4_interval_cidrs(mut start: u64, end: u64, out: &mut Vec<String>) {
+    while start <= end {
+        let aligned = if start == 0 { 32 } else { (start as u32).trailing_zeros() };
+        let remaining = 63 - (end - start + 1).leading_zeros();
+        let bits = aligned.min(remaining);
+        out.push(format!("{}/{}", Ipv4Addr::from(start as u32), 32 - bits));
+        start += 1u64 << bits;
+    }
+}
+
+/// Complement of exact private IPv4 hosts, including all IPv6. Invalid input fails closed.
+fn relay_complement(hosts: &[String]) -> Option<String> {
+    if hosts.is_empty() { return None; }
+    let mut values = Vec::new();
+    for host in hosts {
+        let ip = host.parse::<Ipv4Addr>().ok()?;
+        if !ip.is_private() { return None; }
+        values.push(u32::from(ip));
+    }
+    values.sort_unstable();
+    values.dedup();
+    let mut ranges = Vec::new();
+    let mut start = 0u64;
+    for value in values {
+        if start < value as u64 {
+            ipv4_interval_cidrs(start, value as u64 - 1, &mut ranges);
+        }
+        start = value as u64 + 1;
+    }
+    if start <= u32::MAX as u64 {
+        ipv4_interval_cidrs(start, u32::MAX as u64, &mut ranges);
+    }
+    ranges.extend(["::/1".into(), "8000::/1".into()]);
+    Some(ranges.join(","))
+}
+
+/// A VPN's kill-switch rules: `Keel net: <vpn> out|in` for its first program, `... out #2` for the
+/// next ones, `Keel net: <vpn> udp 51820 out` per port entry. Bad or common port entries are left
+/// out and reported in `problems`.
+fn rule_specs(v: &Vpn, snap: &Snapshot, keep: &[u32], problems: &mut Vec<String>) -> Vec<RuleSpec> {
+    let dir = |o: bool| if o { "out" } else { "in" };
+    let mut out = Vec::new();
+    for (i, prog) in v.all_programs().iter().enumerate() {
+        for o in [true, false] {
+            let name = if i == 0 { format!("Keel net: {} {}", v.name, dir(o)) } else { format!("Keel net: {} {} #{}", v.name, dir(o), i + 1) };
+            out.push((name, prog.clone(), o, None));
+        }
+    }
+    for spec in &v.ports {
+        match parse_ports(spec) {
+            None => problems.push(format!("{}: bad port entry {spec:?} (e.g. udp 51820)", v.name)),
+            Some((_, ports)) if ports.split(',').any(|x| COMMON_PORTS.contains(&x)) =>
+                problems.push(format!("{}: {spec:?} would block common traffic for every program; left out", v.name)),
+            Some(pp) => out.push((format!("Keel net: {} {} out", v.name, spec.trim().to_lowercase().replace(':', " ")), String::new(), true, Some(pp))),
+        }
+    }
+    let mut aliases: Vec<String> = snap.adapters.iter()
+        .filter(|a| !keep.contains(&a.index) && !is_loopback(a) && !v.is_tunnel(a))
+        .map(|a| a.alias.clone()).collect();
+    aliases.sort();
+    let relay = match validate_relay(v, Some(snap)) {
+        Ok(_) => relay_complement(&v.relay_hosts).filter(|_| !keep.iter().any(|i| snap.adapters.iter()
+            .any(|a| a.index == *i && a.alias == v.relay_interface))),
+        Err(e) => { problems.push(format!("{}: {e}; full block retained", v.name)); None }
+    };
+    let mut scoped = Vec::new();
+    for (name, program, outbound, ports) in out {
+        // Global/kernel-port rules never receive relay exceptions.
+        if let Some(addresses) = relay.as_ref().filter(|_| !program.is_empty() && ports.is_none()) {
+            use sha2::{Digest, Sha256};
+            let fingerprint = serde_json::to_vec(&(&program, outbound, &aliases, &v.relay_interface, addresses)).unwrap();
+            let digest = Sha256::digest(&fingerprint).iter().map(|b| format!("{b:02x}")).collect::<String>();
+            let name = format!("{name} {digest}");
+            scoped.push(RuleSpec { name: format!("{name} relay external"), program: program.clone(), outbound,
+                ports: None, aliases: vec![v.relay_interface.clone()], remote_addresses: addresses.clone() });
+            let others: Vec<String> = aliases.iter().filter(|a| **a != v.relay_interface).cloned().collect();
+            if !others.is_empty() {
+                scoped.push(RuleSpec { name: format!("{name} relay other interfaces"), program, outbound,
+                    ports: None, aliases: others, remote_addresses: "*".into() });
+            }
+        } else if !aliases.is_empty() {
+            scoped.push(RuleSpec { name, program, outbound, ports, aliases: aliases.clone(), remote_addresses: "*".into() });
+        }
+    }
+    scoped
 }
 
 /// Host routes a `Server` VPN added itself on the wrong side while its tunnel is up: `/32`s via
@@ -412,7 +545,7 @@ pub fn plan(cfg: &Config, snap: &Snapshot, state: &State) -> Plan {
     let mut p = Plan::default();
     let mut vpns = cfg.vpns.clone();
     for v in vpns.iter_mut().filter(|v| cfg.tailscale_wifi_only && is_tailscale(v)) {
-        if v.via == Side::Lan { p.problems.push(format!("{}: Tailscale never uses the wired LAN; kept on Wi-Fi", v.name)); }
+        if v.via == Side::Lan { p.problems.push(format!("{}: external Tailscale transport must use Wi-Fi; kept on Wi-Fi", v.name)); }
         v.via = Side::Wifi;
         v.kill_switch = true;
     }
@@ -468,47 +601,135 @@ pub fn plan(cfg: &Config, snap: &Snapshot, state: &State) -> Plan {
     for r in &have { if !want.iter().any(|w| same(w, r)) { p.actions.push(Action::RemoveRoute(*r)); } }
     for w in &want { if !snap.routes.iter().any(|r| same(w, r)) { p.actions.push(Action::AddRoute(*w)); } }
 
-    // Kill switches: one rule per program and direction, one outbound rule per port entry (any
-    // program). Every other enabled rule of Keel's (a removed VPN, program or port) is disabled.
-    let mut wanted: Vec<String> = Vec::new();
+    // Keep old protection until every replacement rule is observed in the snapshot.
+    // Planning a replacement is not proof it was successfully installed.
+    let mut specs: Vec<(&Vpn, Vec<RuleSpec>)> = Vec::new();
     for v in &vpns {
         if !(cfg.enabled && v.kill_switch) { continue; }
         let keep: Vec<u32> = snap.side(cfg, v.via).iter().map(|a| a.index).collect();
-        let prefix = format!("Keel net: {} ", v.name);
-        if keep.is_empty() {
-            p.problems.push(format!("{}: no {} adapter found; kill switch left as it is", v.name, v.via));
-            wanted.extend(snap.rules.iter().filter(|r| r.name.starts_with(&prefix)).map(|r| r.name.clone()));
-            continue;
-        }
-        let mut block: Vec<String> = snap.adapters.iter()
-            .filter(|a| !keep.contains(&a.index) && !is_loopback(a) && !v.is_tunnel(a))
-            .map(|a| a.alias.clone()).collect();
-        block.sort();
-        if block.is_empty() { continue; } // an empty list would mean "every interface"
-        let mut rules: Vec<(String, String, bool, Option<(u8, String)>)> = Vec::new();
-        for (i, prog) in v.all_programs().iter().enumerate() {
-            for outbound in [true, false] { rules.push((program_rule_name(v, i, outbound), prog.clone(), outbound, None)); }
-        }
-        for spec in &v.ports {
-            match parse_ports(spec) {
-                None => p.problems.push(format!("{}: bad port entry \"{spec}\" (e.g. udp 51820)", v.name)),
-                Some((_, ports)) if ports.split(',').any(|x| COMMON_PORTS.contains(&x)) =>
-                    p.problems.push(format!("{}: \"{spec}\" would block common traffic for every program; left out", v.name)),
-                Some(pp) => rules.push((rule_name(v, &spec.trim().to_lowercase().replace(':', " "), true), String::new(), true, Some(pp))),
-            }
-        }
+        // Even if Wi-Fi disappears, build full blocks for all remaining non-tunnel adapters.
+        if keep.is_empty() { p.problems.push(format!("{}: no {} adapter found; blocking remaining interfaces", v.name, v.via)); }
+        let rules = rule_specs(v, snap, &keep, &mut p.problems);
         if rules.is_empty() { p.problems.push(format!("{}: the kill switch has no program or port to block", v.name)); }
-        for (name, program, outbound, ports) in rules {
-            let ok = snap.rules.iter().any(|r| r.name == name && r.enabled && r.aliases == block
-                && r.program.eq_ignore_ascii_case(&program) && r.ports == ports);
-            if !ok { p.actions.push(Action::BlockRule { name: name.clone(), program, aliases: block.clone(), outbound, ports }); }
-            wanted.push(name);
-        }
+        block_rules(&mut p, snap, &rules);
+        specs.push((v, rules));
     }
-    for r in snap.rules.iter().filter(|r| r.enabled && !wanted.contains(&r.name)) {
-        p.actions.push(Action::DisableRule { name: r.name.clone() });
+    let wanted: Vec<&String> = specs.iter().flat_map(|(_, rules)| rules.iter().map(|r| &r.name)).collect();
+    for old in snap.rules.iter().filter(|r| r.enabled && !wanted.contains(&&r.name)) {
+        let safe = specs.iter().filter(|(v, _)| v.all_programs().iter().any(|prog| prog.eq_ignore_ascii_case(&old.program))
+            || (old.program.is_empty() && v.ports.iter().any(|port| parse_ports(port) == old.ports)))
+            .all(|(v, rules)| !snap.side(cfg, v.via).is_empty() && !rules.is_empty()
+                && rules.iter().all(|spec| snap.rules.iter().any(|r| rule_matches(r, spec))));
+        if safe { p.actions.push(Action::DisableRule { name: old.name.clone() }); }
+        else { p.notes.push(format!("old firewall rule {} kept until the new kill switch is in place", old.name)); }
     }
     p
+}
+
+/// Block rules for `v` on every adapter outside `keep`, its tunnels and loopback.
+fn block_rules(p: &mut Plan, snap: &Snapshot, rules: &[RuleSpec]) {
+    for spec in rules {
+        let ok = snap.rules.iter().any(|r| rule_matches(r, spec));
+        if !ok {
+            p.actions.push(Action::BlockRule { name: spec.name.clone(), program: spec.program.clone(),
+                aliases: spec.aliases.clone(), outbound: spec.outbound, ports: spec.ports.clone(),
+                remote_addresses: spec.remote_addresses.clone() });
+        }
+    }
+}
+
+fn rule_matches(r: &Rule, spec: &RuleSpec) -> bool {
+    r.name == spec.name && r.enabled && r.scope_valid && r.outbound == spec.outbound && r.aliases == spec.aliases
+        && r.program.eq_ignore_ascii_case(&spec.program) && same_ports(&r.ports, &spec.ports)
+        && same_addresses(&r.remote_addresses, &spec.remote_addresses)
+}
+
+/// Windows may coalesce adjacent port entries into ranges.
+fn same_ports(a: &Option<(u8, String)>, b: &Option<(u8, String)>) -> bool {
+    fn ranges(s: &str) -> Option<Vec<(u16, u16)>> {
+        let mut out = Vec::new();
+        for item in s.split(',').map(str::trim) {
+            let (lo, hi) = item.split_once('-').unwrap_or((item, item));
+            let (lo, hi): (u16, u16) = (lo.trim().parse().ok()?, hi.trim().parse().ok()?);
+            if lo == 0 || lo > hi { return None; }
+            out.push((lo, hi));
+        }
+        out.sort_unstable();
+        let mut merged: Vec<(u16, u16)> = Vec::new();
+        for (lo, hi) in out {
+            if let Some(last) = merged.last_mut() && lo <= last.1.saturating_add(1) { last.1 = last.1.max(hi); }
+            else { merged.push((lo, hi)); }
+        }
+        Some(merged)
+    }
+    match (a, b) {
+        (None, None) => true,
+        (Some((ap, a)), Some((bp, b))) if ap == bp => match (ranges(a), ranges(b)) { (Some(a), Some(b)) => a == b, _ => false },
+        _ => false,
+    }
+}
+
+/// Normalize Windows' remote-address spelling into merged inclusive address ranges.
+fn address_ranges(input: &str) -> Option<Vec<(u8, u128, u128)>> {
+    use std::net::IpAddr;
+    fn address(s: &str) -> Option<(u8, u128)> {
+        match s.trim().parse::<IpAddr>().ok()? {
+            IpAddr::V4(ip) => Some((4, u32::from(ip) as u128)),
+            IpAddr::V6(ip) => Some((6, u128::from(ip))),
+        }
+    }
+    let mut ranges = Vec::new();
+    for item in input.split(',').map(str::trim) {
+        if item == "*" {
+            ranges.extend([(4, 0, u32::MAX as u128), (6, 0, u128::MAX)]);
+        } else if let Some((left, right)) = item.split_once('-') {
+            let (af, first) = address(left)?;
+            let (bf, last) = address(right)?;
+            if af != bf || first > last { return None; }
+            ranges.push((af, first, last));
+        } else if let Some((host, mask)) = item.split_once('/') {
+            let (af, ip) = address(host)?;
+            let bits = if af == 4 { 32 } else { 128 };
+            let prefix: u32 = match mask.trim().parse::<u32>() {
+                Ok(n) if n <= bits => n,
+                Ok(_) => return None,
+                Err(_) => {
+                    let (mf, value) = address(mask)?;
+                    if mf != af { return None; }
+                    let m = if af == 4 { (value as u32).leading_ones() } else { value.leading_ones() };
+                    let expected = if m == 0 { 0 } else { u128::MAX << (bits - m) };
+                    let expected = if af == 4 { expected & u32::MAX as u128 } else { expected };
+                    if value != expected { return None; }
+                    m
+                }
+            };
+            let full = if af == 4 { u32::MAX as u128 } else { u128::MAX };
+            let hostmask = if prefix == 0 { full } else if prefix == bits { 0 } else { full >> prefix };
+            let first = ip & (full ^ hostmask);
+            ranges.push((af, first, first | hostmask));
+        } else {
+            let (af, ip) = address(item)?;
+            ranges.push((af, ip, ip));
+        }
+    }
+    ranges.sort_unstable();
+    let mut merged: Vec<(u8, u128, u128)> = Vec::new();
+    for (af, start, end) in ranges {
+        if let Some(last) = merged.last_mut()
+            && last.0 == af && start <= last.2.saturating_add(1) {
+            last.2 = last.2.max(end);
+        } else {
+            merged.push((af, start, end));
+        }
+    }
+    if merged.is_empty() { None } else { Some(merged) }
+}
+
+fn same_addresses(a: &str, b: &str) -> bool {
+    match (address_ranges(a), address_ranges(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// What the plan's actions change, recorded before any of them runs. Keeps the first record.
@@ -554,9 +775,205 @@ mod tests {
     use super::*;
 
     fn ad(index: u32, alias: &str, desc: &str, up: bool, metric: u32) -> Adapter {
-        Adapter { index, alias: alias.into(), description: desc.into(), up, metric, auto_metric: true, kind: Kind::Other }
+        Adapter { index, alias: alias.into(), description: desc.into(), up, metric, auto_metric: true, kind: kind_of(if alias == "Wi-Fi" { 71 } else { 6 }, desc) }
     }
 
+    #[test]
+    fn old_config_has_no_relay_exceptions() {
+        let v: Vpn = toml::from_str("name = \"N\"").unwrap();
+        assert!(v.relay_hosts.is_empty());
+        assert!(v.relay_interface.is_empty());
+        assert!(Vpn::default().relay_hosts.is_empty());
+    }
+    fn relay_config() -> Config {
+        let mut cfg = Config::example();
+        cfg.vpns[0].relay_interface = "Ethernet".into();
+        cfg.vpns[0].relay_hosts = vec!["192.168.50.1".into(), "192.168.50.5".into()];
+        cfg
+    }
+
+    fn planned_rules(p: &Plan) -> Vec<Rule> {
+        p.actions.iter().filter_map(|a| match a {
+            Action::BlockRule { name, program, aliases, ports, remote_addresses, outbound, .. } => Some(Rule {
+                name: name.clone(), enabled: true, program: program.clone(), aliases: aliases.clone(),
+                ports: ports.clone(), remote_addresses: remote_addresses.clone(), outbound: *outbound, scope_valid: true,
+            }), _ => None
+        }).collect()
+    }
+
+    #[test]
+    fn relay_hosts_complement_and_input_validation() {
+        assert!(same_addresses(&relay_complement(&relay_config().vpns[0].relay_hosts).unwrap(),
+            "0.0.0.0-192.168.50.0,192.168.50.2-192.168.50.4,192.168.50.6-255.255.255.255,::/0"));
+        for bad in ["0.0.0.0", "8.8.8.8", "::1", "192.168.50.0/24", "*", "127.0.0.1", "169.254.1.1"] {
+            assert!(relay_complement(&[bad.into()]).is_none(), "{bad}");
+        }
+        assert!(relay_complement(&[]).is_none());
+        let one = relay_complement(&["10.0.0.1".into()]).unwrap();
+        assert_eq!(one, relay_complement(&["10.0.0.1".into(), "10.0.0.1".into()]).unwrap());
+    }
+
+    #[test]
+    fn relay_cidrs_preserve_exact_host_exclusions() {
+        for hosts in [
+            vec!["192.168.50.1", "192.168.50.4", "192.168.50.5"],
+            vec!["10.0.0.0", "10.0.0.1", "10.255.255.255"],
+            vec!["172.16.0.0", "172.31.255.255", "192.168.255.255"],
+            vec!["192.168.50.5", "192.168.50.1", "192.168.50.5"],
+        ] {
+            let hosts: Vec<String> = hosts.into_iter().map(String::from).collect();
+            let complement = relay_complement(&hosts).unwrap();
+            assert!(!complement.contains('-'));
+            assert!(!complement.split(',').any(|c| c.ends_with("/0")));
+            let mut expected: Vec<(u8, u128, u128)> = Vec::new();
+            let mut ips: Vec<u32> = hosts.iter().map(|h| u32::from(h.parse::<Ipv4Addr>().unwrap())).collect();
+            ips.sort_unstable();
+            ips.dedup();
+            let mut start = 0u128;
+            for ip in ips {
+                if start < ip as u128 { expected.push((4, start, ip as u128 - 1)); }
+                start = ip as u128 + 1;
+            }
+            expected.push((4, start, u32::MAX as u128));
+            expected.push((6, 0, u128::MAX));
+            assert_eq!(address_ranges(&complement).unwrap(), expected);
+            // A canonicalized mask returned by Windows must not trigger reapply.
+            let windows = complement.split(',').map(|c| {
+                let (addr, prefix) = c.split_once('/').unwrap();
+                if addr.contains(':') { return c.to_owned(); }
+                let prefix: u32 = prefix.parse().unwrap();
+                format!("{addr}/{}", Ipv4Addr::from(u32::MAX << (32 - prefix)))
+            }).collect::<Vec<_>>().join(",");
+            assert!(same_addresses(&complement, &windows));
+        }
+    }
+
+    #[test]
+    fn relay_only_exact_ethernet_and_actual_addresses_are_compared() {
+        let cfg = relay_config();
+        let mut snap = both_up();
+        let p = plan(&cfg, &snap, &State::default());
+        let rules = planned_rules(&p);
+        assert_eq!(rules.len(), 4);
+        for rule in &rules {
+            if rule.name.ends_with("relay external") {
+                assert_eq!(rule.aliases, ["Ethernet"]);
+                assert!(rule.remote_addresses.ends_with(",::/1,8000::/1"));
+            } else {
+                assert_eq!(rule.remote_addresses, "*");
+                assert!(!rule.aliases.contains(&"Ethernet".into()));
+                assert!(!rule.aliases.contains(&"Wi-Fi".into()));
+            }
+        }
+        snap.rules = rules;
+        assert!(planned_rules(&plan(&cfg, &snap, &State::default())).is_empty());
+        snap.rules[0].remote_addresses = "10.0.0.0/8".into(); // external tampering must be repaired
+        assert_eq!(planned_rules(&plan(&cfg, &snap, &State::default())).len(), 1);
+    }
+
+    #[test]
+    fn relay_migration_is_fail_closed_and_clear_restores_full_block() {
+        let cfg = relay_config();
+        let mut snap = both_up();
+        snap.rules = planned_rules(&plan(&Config::example(), &snap, &State::default()));
+        let p = plan(&cfg, &snap, &State::default());
+        assert!(!p.actions.iter().any(|a| matches!(a, Action::DisableRule { .. })));
+        snap.rules.extend(planned_rules(&p));
+        let ready = plan(&cfg, &snap, &State::default());
+        assert_eq!(ready.actions.iter().filter(|a| matches!(a, Action::DisableRule { .. })).count(), 2);
+        snap.rules.retain(|r| r.name.contains("relay "));
+        let mut cleared = cfg;
+        cleared.vpns[0].relay_hosts.clear();
+        let p = plan(&cleared, &snap, &State::default());
+        assert!(p.problems.is_empty());
+        assert_eq!(planned_rules(&p).len(), 2);
+        assert!(!p.actions.iter().any(|a| matches!(a, Action::DisableRule { .. })));
+        assert!(planned_rules(&p).iter().all(|r| r.remote_addresses == "*"));
+    }
+
+    #[test]
+    fn relay_save_validation_and_backward_compatibility() {
+        let old: Vpn = toml::from_str("name = \"Old\"\n").unwrap();
+        assert!(old.relay_hosts.is_empty());
+        let mut cfg = relay_config();
+        cfg.vpns[0].via = Side::Lan;
+        assert!(validate_relays(&cfg).is_err());
+        cfg.tailscale_wifi_only = true;
+        assert!(validate_relays(&cfg).is_ok());
+        cfg.vpns[0].relay_hosts = vec!["100.64.0.1".into()];
+        assert!(validate_relays(&cfg).is_err());
+        cfg.vpns[0].relay_hosts.clear();
+        assert!(validate_relays(&cfg).is_ok());
+        let encoded = toml::to_string(&relay_config()).unwrap();
+        assert_eq!(toml::from_str::<Config>(&encoded).unwrap(), relay_config());
+    }
+
+    #[test]
+    fn relay_adapter_change_keeps_old_generation_during_partial_install() {
+        let a = relay_config();
+        let mut snap = both_up();
+        snap.adapters.push(Adapter { index: 99, alias: "USB Ethernet".into(), description: "USB Ethernet".into(),
+            kind: Kind::Wired, up: true, metric: 5, auto_metric: true });
+        let old = planned_rules(&plan(&a, &snap, &State::default()));
+        snap.rules = old.clone();
+        let mut b = a.clone(); b.vpns[0].relay_interface = "USB Ethernet".into();
+        let pending = plan(&b, &snap, &State::default());
+        let new = planned_rules(&pending);
+        assert_eq!(new.len(), 4);
+        assert!(new.iter().all(|n| old.iter().all(|o| n.name != o.name)));
+        assert!(!pending.actions.iter().any(|a| matches!(a, Action::DisableRule { .. })));
+        // Only one Add succeeds: every old guard still stays active.
+        snap.rules.push(new[0].clone());
+        assert!(!plan(&b, &snap, &State::default()).actions.iter().any(|a| matches!(a, Action::DisableRule { .. })));
+        snap.rules.extend(new[1..].to_vec());
+        assert_eq!(plan(&b, &snap, &State::default()).actions.iter().filter(|a| matches!(a, Action::DisableRule { .. })).count(), old.len());
+        // A rule's metadata cannot prove an allow or wrong-direction rule protects the interface.
+        snap.rules.last_mut().unwrap().scope_valid = false;
+        assert!(!plan(&b, &snap, &State::default()).actions.iter().any(|a| matches!(a, Action::DisableRule { .. })));
+    }
+
+    #[test]
+    fn relay_invalid_inputs_or_missing_interface_keep_full_block() {
+        for interface in ["", "Missing", "Wi-Fi", "Tailscale", "Ether*"] {
+            let mut cfg = relay_config();
+            cfg.vpns[0].relay_interface = interface.into();
+            let p = plan(&cfg, &both_up(), &State::default());
+            assert!(!p.problems.is_empty(), "{interface}");
+            assert_eq!(planned_rules(&p).len(), 2);
+            assert!(planned_rules(&p).iter().all(|r| r.remote_addresses == "*"));
+        }
+        let mut cfg = relay_config();
+        cfg.vpns[0].relay_hosts.push("8.8.8.8".into());
+        let p = plan(&cfg, &both_up(), &State::default());
+        assert!(!p.problems.is_empty());
+        assert!(planned_rules(&p).iter().all(|r| r.remote_addresses == "*"));
+    }
+
+    #[test]
+    fn relay_missing_wifi_or_invalid_config_does_not_retire_old_guards() {
+        let mut cfg = relay_config();
+        let mut snap = both_up();
+        snap.rules = planned_rules(&plan(&Config::example(), &snap, &State::default()));
+        snap.adapters.retain(|a| a.alias != "Wi-Fi");
+        let p = plan(&cfg, &snap, &State::default());
+        assert!(!p.actions.iter().any(|a| matches!(a, Action::DisableRule { .. })));
+        let mut snap = both_up();
+        snap.rules = planned_rules(&plan(&cfg, &snap, &State::default()));
+        cfg.vpns[0].relay_interface = "Missing".into();
+        let p = plan(&cfg, &snap, &State::default());
+        assert!(!p.actions.iter().any(|a| matches!(a, Action::DisableRule { .. })));
+        assert!(planned_rules(&p).iter().all(|r| r.remote_addresses == "*"));
+    }
+
+    #[test]
+    fn relay_wifi_down_keeps_external_block() {
+        let cfg = relay_config();
+        let mut snap = both_up();
+        snap.adapters.iter_mut().find(|a| a.alias == "Wi-Fi").unwrap().up = false;
+        let rules = planned_rules(&plan(&cfg, &snap, &State::default()));
+        assert_eq!(rules.len(), 4);
+        assert!(rules.iter().filter(|r| r.name.ends_with("external")).all(|r| r.remote_addresses.ends_with("::/1,8000::/1")));
+    }
     #[test]
     fn lan_picker_choices() {
         let wired = vec!["ASIX AX88179".to_string(), "Intel I225-V".to_string()];
@@ -658,7 +1075,7 @@ mod tests {
         cfg.vpns[0].via = Side::Lan;
         cfg.vpns[0].kill_switch = false;
         let p = plan(&cfg, &both_up(), &State::default());
-        assert!(p.problems[0].contains("never uses the wired LAN"));
+        assert!(p.problems[0].contains("must use Wi-Fi"));
         assert_eq!(p.follow, Some(Side::Wifi));
         assert!(p.actions.iter().any(|a| matches!(a, Action::BlockRule { aliases, .. } if aliases.contains(&"Ethernet".to_string()))));
     }
@@ -704,8 +1121,8 @@ mod tests {
         snap.policy = Some(0);
         snap.adapters[0].metric = 1; snap.adapters[0].auto_metric = false;
         for a in &p.actions { if let Action::AddRoute(x) = a { snap.routes.push(*x); } }
-        snap.rules = p.actions.iter().filter_map(|a| if let Action::BlockRule { name, program, aliases, ports, .. } = a {
-            Some(Rule { name: name.clone(), enabled: true, program: program.clone(), aliases: aliases.clone(), ports: ports.clone() }) } else { None }).collect();
+        snap.rules = p.actions.iter().filter_map(|a| if let Action::BlockRule { name, program, aliases, ports, remote_addresses, outbound } = a {
+            Some(Rule { name: name.clone(), enabled: true, program: program.clone(), aliases: aliases.clone(), ports: ports.clone(), remote_addresses: remote_addresses.clone(), outbound: *outbound, scope_valid: true }) } else { None }).collect();
         assert_eq!(plan(&cfg, &snap, &state).actions, vec![]);
         assert_eq!(state.metrics["Wi-Fi"], (true, 40));
         assert_eq!(state.policy_old, None);
@@ -715,6 +1132,13 @@ mod tests {
         assert_eq!(off.actions.iter().filter(|a| matches!(a, Action::RemoveRoute(_))).count(), 2);
         assert_eq!(off.actions.iter().filter(|a| matches!(a, Action::DisableRule { .. })).count(), 2);
         assert!(!off.actions.contains(&Action::SetPolicy));
+    }
+
+    #[test]
+    fn windows_port_filter_normalization() {
+        assert!(same_ports(&Some((17, "1194-1196".into())), &Some((17, "1196,1194,1195".into()))));
+        assert!(!same_ports(&Some((17, "1194-1196".into())), &Some((17, "1194,1196".into()))));
+        assert!(!same_ports(&Some((6, "1194".into())), &Some((17, "1194".into()))));
     }
 
     #[test]
@@ -774,7 +1198,7 @@ mod tests {
     #[test]
     fn removed_vpn_and_common_ports() {
         let (mut cfg, mut snap) = nord_snapshot();
-        snap.rules.push(Rule { name: "Keel net: Old VPN out".into(), enabled: true, program: "x.exe".into(), aliases: vec!["Ethernet".into()], ports: None });
+        snap.rules.push(Rule { name: "Keel net: Old VPN out".into(), enabled: true, program: "x.exe".into(), aliases: vec!["Ethernet".into()], ports: None, remote_addresses: "*".into(), outbound: true, scope_valid: true });
         cfg.vpns[0].ports.push("tcp 443".into());
         let p = plan(&cfg, &snap, &State::default());
         assert!(p.actions.contains(&Action::DisableRule { name: "Keel net: Old VPN out".into() }));

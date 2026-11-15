@@ -28,6 +28,9 @@ mod localai;
 mod memhistory;
 mod redraw;
 mod stress;
+mod relay_form;
+#[cfg(debug_assertions)]
+mod network_preview;
 
 thread_local! {
     /// External GPU page state (telemetry history, stress test); UI thread only.
@@ -84,6 +87,7 @@ fn vpn_model(c: &NetConfig) -> ModelRc<VpnRow> {
         if !v.adapter.trim().is_empty() { kind.push(format!("tunnel {}", v.adapter.trim())); }
         if !v.ports.is_empty() { kind.push(format!("ports {}", v.ports.join(", "))); }
         if !v.servers.is_empty() { kind.push(format!("{} server(s)", v.servers.len())); }
+        if !v.relay_hosts.is_empty() { kind.push(format!("{} LAN relay host(s) on {}", v.relay_hosts.len(), v.relay_interface)); }
         let progs = v.all_programs();
         VpnRow {
             name: v.name.clone().into(),
@@ -107,6 +111,15 @@ fn fill_form(ui: &MainWindow, v: &Vpn) {
     ui.set_new_adapter(v.adapter.clone().into());
     ui.set_new_ports(v.ports.join(", ").into());
     ui.set_new_servers(v.servers.join(", ").into());
+    let wired: Vec<String> = keel_net::sys::adapters().unwrap_or_default().into_iter()
+        .filter(|a| a.kind == keel_net::model::Kind::Wired).map(|a| a.alias).collect();
+    let (labels, aliases, at) = relay_form::choices(&wired, &v.relay_interface);
+    ui.set_relay_labels(ModelRc::new(VecModel::from(labels.into_iter().map(SharedString::from).collect::<Vec<_>>())));
+    ui.set_relay_aliases(ModelRc::new(VecModel::from(aliases.into_iter().map(SharedString::from).collect::<Vec<_>>())));
+    ui.set_new_relay_interface(at as i32);
+    ui.set_new_relay_hosts(ModelRc::new(VecModel::from(v.relay_hosts.iter().cloned().map(SharedString::from).collect::<Vec<_>>())));
+    ui.set_new_relay_host(SharedString::new());
+    ui.set_relay_ack(false);
 }
 
 /// The VPN in the form, checked.
@@ -126,6 +139,14 @@ fn form_vpn(ui: &MainWindow) -> Result<Vpn, String> {
                       adapter: ui.get_new_adapter().trim().to_string(), via: index_side(ui.get_new_via()), kill_switch: kill,
                       servers, ports, ..Default::default() };
     v.set_programs(programs);
+    v.relay_interface = ui.get_relay_aliases().row_data(ui.get_new_relay_interface() as usize).unwrap_or_default().to_string();
+    v.relay_hosts = ui.get_new_relay_hosts().iter().map(|h| h.to_string()).collect();
+    if !ui.get_new_relay_host().trim().is_empty() { return Err("Click Add IP or clear the pending LAN IP first".into()); }
+    let mut effective = v.clone();
+    if ui.get_net_ts_wifi() && keel_net::model::is_tailscale(&effective) { effective.via = Side::Wifi; effective.kill_switch = true; }
+    let snap = keel_net::model::Snapshot { adapters: keel_net::sys::adapters().map_err(|e| format!("Cannot check relay adapter: {e}"))?, ..Default::default() };
+    keel_net::model::validate_relay(&effective, Some(&snap))?;
+    if !v.relay_hosts.is_empty() && !ui.get_relay_ack() { return Err("Confirm the LAN relay access warning before Done".into()); }
     Ok(v)
 }
 
@@ -199,6 +220,8 @@ struct Data {
     top: Vec<Family>,
     od: Option<State>,
     net: Option<NetConfig>,
+    net_relay_supported: bool,
+    net_relay_dirty: bool,
     /// What each LAN choice on the Network page saves as `lan_descriptions`.
     net_lans: Vec<Vec<String>>,
     /// The Network page's picker: (title, detail, value), unfiltered.
@@ -303,20 +326,22 @@ fn show_net(ui: &MainWindow, r: &Result<keel_net::service::Reply, String>, data:
     home::net(ui, r);
     match r {
         Ok(r) => {
+            data.lock().unwrap().net_relay_supported = r.relay_supported;
             ui.set_net_summary(r.summary.clone().into());
             let mut d = Vec::new();
             d.extend(r.problems.iter().map(|p| format!("! {p}")));
             if r.pending.is_empty() { d.push("Routes and rules match the config.".into()); } else { d.push(format!("{} change(s) pending: {}", r.pending.len(), r.pending.join("; "))); }
             ui.set_net_detail(d.join("   ").into());
             ui.set_net_line(format!("Network: {}", r.summary).into());
-            if let Some(c) = &r.config { set_net_config(ui, c, data); data.lock().unwrap().net = Some(c.clone()); }
+            if !ui.get_net_dirty() && !ui.get_add_open() { if let Some(c) = &r.config { set_net_config(ui, c, data); data.lock().unwrap().net = Some(c.clone()); } }
         }
         Err(e) => {
+            data.lock().unwrap().net_relay_supported = false;
             // No service: show the config as read (ProgramData\keel is readable) so it can be looked at.
             ui.set_net_summary("The Keel service is not running".into());
             ui.set_net_detail(if e.contains("not running") { "Showing net.toml as saved; Save and apply needs the service.".into() } else { e.clone().into() });
             ui.set_net_line("Network: the service is not running".into());
-            if let Ok(c) = keel_net::load_config() { set_net_config(ui, &c, data); data.lock().unwrap().net = Some(c); }
+            if !ui.get_net_dirty() && !ui.get_add_open() { if let Ok(c) = keel_net::load_config() { set_net_config(ui, &c, data); data.lock().unwrap().net = Some(c); } }
         }
     }
 }
@@ -517,9 +542,29 @@ fn exe_beside(name: &str) -> std::path::PathBuf {
 }
 
 fn net_call(ui: &MainWindow, data: Arc<Mutex<Data>>, req: keel_net::service::Request) {
+    if ui.get_busy() { return; }
+    let saving = matches!(req, keel_net::service::Request::SetConfig { .. });
     background(ui, move || keel_net::service::call(&req).map_err(|e| format!("{e:#}")), move |ui, r| {
-        ui.set_status(match &r { Ok(r) => r.message.clone(), Err(e) => e.clone() }.into());
-        show_net(ui, &r, &data);
+        if saving {
+            match &r {
+                Ok(reply) if reply.ok => {
+                    ui.set_net_dirty(false);
+                    data.lock().unwrap().net_relay_dirty = false;
+                    ui.set_vpn_note(SharedString::new());
+                    let pending = !reply.pending.is_empty() || !reply.problems.is_empty();
+                    ui.set_status(if pending { format!("Saved, but not fully applied: {}", reply.message) } else { reply.message.clone() }.into());
+                    show_net(ui, &r, &data);
+                }
+                _ => {
+                    ui.set_net_dirty(true);
+                    let message = match &r { Ok(reply) => reply.message.clone(), Err(e) => e.clone() };
+                    ui.set_status(format!("Save/apply failed; edits retained: {message}").into());
+                }
+            }
+        } else {
+            ui.set_status(match &r { Ok(r) => r.message.clone(), Err(e) => e.clone() }.into());
+            show_net(ui, &r, &data);
+        }
     });
 }
 
@@ -561,6 +606,12 @@ fn open_page(ui: &MainWindow, t: &str) {
 fn main() -> Result<(), slint::PlatformError> {
     // The tray panel: `--flyout L,T,R,B` (the tray icon's rectangle, physical pixels).
     let argv: Vec<String> = std::env::args().collect();
+    if argv.iter().any(|a| a == "--preview-network") {
+        #[cfg(debug_assertions)]
+        return network_preview::run();
+        #[cfg(not(debug_assertions))]
+        return Ok(()); // Never fall through to live startup for a preview request.
+    }
     if let Some(r) = argv.windows(2).find(|w| w[0] == "--flyout").map(|w| w[1].clone()) {
         let v: Vec<i32> = r.split(',').filter_map(|x| x.trim().parse().ok()).collect();
         return flyout::run(if let [l, t, r, b] = v[..] { (l, t, r, b) } else { (0, 0, 0, 0) });
@@ -990,6 +1041,29 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         });
     }
+    {
+        let w = ui.as_weak();
+        ui.on_relay_add(move || {
+            let Some(ui) = w.upgrade() else { return };
+            let mut hosts: Vec<String> = ui.get_new_relay_hosts().iter().map(|h| h.to_string()).collect();
+            match relay_form::add_host(&mut hosts, ui.get_new_relay_host().as_str()) {
+                Ok(()) => {
+                    ui.set_new_relay_hosts(ModelRc::new(VecModel::from(hosts.into_iter().map(SharedString::from).collect::<Vec<_>>())));
+                    ui.set_new_relay_host(SharedString::new()); ui.set_relay_ack(false); ui.set_form_error(SharedString::new());
+                }
+                Err(e) => ui.set_form_error(e.into()),
+            }
+        });
+    }
+    {
+        let w = ui.as_weak();
+        ui.on_relay_remove(move |at| {
+            let Some(ui) = w.upgrade() else { return };
+            let mut hosts: Vec<SharedString> = ui.get_new_relay_hosts().iter().collect();
+            if let Ok(at) = usize::try_from(at) { if at < hosts.len() { hosts.remove(at); } }
+            ui.set_new_relay_hosts(ModelRc::new(VecModel::from(hosts))); ui.set_relay_ack(false);
+        });
+    }
     // Network page: edits go to the in-memory config; "Save and apply" sends it to the service.
     {
         let d = data.clone(); let w = ui.as_weak();
@@ -1010,6 +1084,8 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_vpn_remove_at(move |r| {
             let Some(ui) = w.upgrade() else { return };
             let mut g = d.lock().unwrap();
+            let relay_removed = g.net.as_ref().and_then(|c| c.vpns.get(r as usize)).is_some_and(|v| !v.relay_hosts.is_empty());
+            if relay_removed { g.net_relay_dirty = true; }
             let Some(c) = g.net.as_mut() else { return };
             if (r as usize) < c.vpns.len() { c.vpns.remove(r as usize); }
             ui.set_vpn_list(vpn_model(c));
@@ -1023,8 +1099,13 @@ fn main() -> Result<(), slint::PlatformError> {
             // A mistake stays in the open form, in red, next to the fields.
             let v = match form_vpn(&ui) { Ok(v) => v, Err(e) => { ui.set_form_error(e.into()); return; } };
             let mut g = d.lock().unwrap();
-            let c = g.net.get_or_insert_with(NetConfig::default);
+            if !g.net_relay_supported && !v.relay_hosts.is_empty() {
+                ui.set_form_error("LAN relay editing needs the updated Keel service. Install the matching version first.".into()); return;
+            }
             let at = ui.get_edit_index();
+            let old = g.net.as_ref().and_then(|c| usize::try_from(at).ok().and_then(|i| c.vpns.get(i)));
+            if old.is_some_and(|old| old.relay_hosts != v.relay_hosts || old.relay_interface != v.relay_interface) || !v.relay_hosts.is_empty() { g.net_relay_dirty = true; }
+            let c = g.net.get_or_insert_with(NetConfig::default);
             if c.vpns.iter().enumerate().any(|(i, x)| i as i32 != at && x.name.eq_ignore_ascii_case(&v.name)) {
                 ui.set_form_error(format!("A VPN named {} exists: use its Edit button, or pick another name", v.name).into());
                 return;
@@ -1095,7 +1176,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let text = if programs { ui.get_new_exe() } else { ui.get_new_adapter() };
             let mut list: Vec<String> = text.split(if programs { '\n' } else { ',' }).map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
             if !list.iter().any(|x| x.eq_ignore_ascii_case(&value)) { list.push(value.to_string()); }
-            if programs { ui.set_new_exe(list.join("\n").into()); } else { ui.set_new_adapter(list.join(", ").into()); }
+            if programs { ui.set_new_exe(list.join("\n").into()); ui.set_relay_ack(false); } else { ui.set_new_adapter(list.join(", ").into()); }
         });
     }
     {
@@ -1138,19 +1219,33 @@ fn main() -> Result<(), slint::PlatformError> {
         let d = data.clone(); let w = ui.as_weak();
         ui.on_net_save(move || {
             let Some(ui) = w.upgrade() else { return };
+            if ui.get_busy() { return; }
             // An open VPN form is part of what is saved; a form with a mistake stops the save.
             if ui.get_add_open() {
                 ui.invoke_vpn_add();
                 if ui.get_add_open() { ui.set_net_dirty(true); ui.set_status("Not saved: fix the VPN form first".into()); return; }
             }
-            ui.set_net_dirty(false);
-            ui.set_vpn_note(SharedString::new());
             let mut c = d.lock().unwrap().net.clone().unwrap_or_default();
+            let (relay_supported, relay_dirty) = { let g = d.lock().unwrap(); (g.net_relay_supported, g.net_relay_dirty) };
+            if !relay_supported && (relay_dirty || c.vpns.iter().any(|v| !v.relay_hosts.is_empty() || !v.relay_interface.is_empty())) {
+                ui.set_status("Not saved: LAN relay needs the updated Keel service".into()); ui.set_net_dirty(true); return;
+            }
             if let Some(v) = d.lock().unwrap().net_lans.get(ui.get_net_lan() as usize) { c.lan_descriptions = v.clone(); }
             c.internet = index_side(ui.get_net_internet());
             c.enabled = ui.get_net_enabled();
             c.keep_wifi_with_lan = ui.get_net_keep_wifi();
             c.tailscale_wifi_only = ui.get_net_ts_wifi();
+            let snap = match keel_net::sys::adapters() {
+                Ok(adapters) => keel_net::model::Snapshot { adapters, ..Default::default() },
+                Err(e) => { ui.set_status(format!("Not saved: cannot check adapters: {e}").into()); return; }
+            };
+            for v in &c.vpns {
+                let mut effective = v.clone();
+                if c.tailscale_wifi_only && keel_net::model::is_tailscale(v) { effective.via = Side::Wifi; effective.kill_switch = true; }
+                if let Err(e) = keel_net::model::validate_relay(&effective, Some(&snap)) {
+                    ui.set_status(format!("Not saved: {}: {e}", v.name).into()); ui.set_net_dirty(true); return;
+                }
+            }
             net_call(&ui, d.clone(), keel_net::service::Request::SetConfig { config: c });
         });
     }

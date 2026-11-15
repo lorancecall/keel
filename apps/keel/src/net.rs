@@ -23,8 +23,11 @@ CONFIG (%ProgramData%\\keel\\net.toml)
   [[routes]] prefix = \"10.0.0.0/8\"  via = \"lan\"
   [[vpns]]   name, kind = \"default-route\" | \"server\", exe, adapter (description, * wildcards),
              via = \"wifi\" | \"lan\", kill_switch = true | false, servers = [\"a.b.c.d\"] (server kind)
-  tailscale_wifi_only = true | false  Tailscale never uses the wired LAN (kept on Wi-Fi, kill
+  tailscale_wifi_only = true | false  Tailscale external transport stays on Wi-Fi (kill
                                       switch on); default false, true when net.toml lacks it
+  Optional VPN relay_interface = exact Ethernet alias, relay_hosts = [private IPv4 hosts].
+  Empty hosts keep full isolation. Exceptions cover all ports/protocols in both directions.
+  Do not add LAN VPN/DERP endpoints: transport to allowed hosts cannot be distinguished from relay.
   Default-route VPNs (Tailscale, WireGuard, NordLynx) bind to the side with the best 0.0.0.0/0
   route, so they share one side.
 ";
@@ -58,7 +61,7 @@ fn print_status(full: bool) -> Result<()> {
         println!("Keel / split routes: {}", if splits.is_empty() { "none".into() } else { splits.join("; ") });
         for rule in &snap.rules {
             let what = match &rule.ports { Some((pr, ports)) => format!("{} {ports}", if *pr == 17 { "udp" } else { "tcp" }), None => rule.program.clone() };
-            println!("firewall {}: {} {what} on {}", rule.name, if rule.enabled { "block" } else { "disabled" }, rule.aliases.join(", "));
+            println!("firewall {}: {} {what} on {} (remote {})", rule.name, if rule.enabled { "block" } else { "disabled" }, rule.aliases.join(", "), rule.remote_addresses);
         }
         let side = |s: Option<Side>| s.map_or("-".to_string(), |s| s.to_string());
         println!("\nVPN side (lowest metric): {}; general internet: {}", side(plan.follow), side(plan.internet));

@@ -80,9 +80,32 @@ Each VPN has:
 | Tunnel adapters | Its own virtual adapters (comma-separated, `*` wildcard); never blocked. |
 | Ports | For tunnels inside Windows, which no program rule catches (NordLynx, WireGuard: `udp 51820`). Blocked for every program off its side; 53, 80, 443 are refused. Not needed for Tailscale. |
 | Servers | Fixed server addresses for *Own server routes*; usually empty. |
+| LAN relay | Optional exact private IPv4 hosts on one selected Ethernet adapter. Add/remove IPs in the VPN editor, acknowledge the access warning, choose Done, then Save and apply. Empty by default. |
 
 *Tailscale only on Wi-Fi* keeps Tailscale off the wired LAN with its kill switch on, whatever its
-own row says. **Routes** send chosen destinations over a fixed side.
+own row says (except explicit LAN relay hosts below). **Routes** send chosen destinations over a fixed side.
+
+### Private LAN relay exceptions
+
+For a userspace subnet router, the VPN editor can exempt selected LAN servers while keeping
+external VPN transport on Wi-Fi. Choose an exact Ethernet adapter and add individual RFC1918
+IPv4 addresses. Public IPs, hostnames, CIDRs, IPv6 and wildcard adapters are rejected. Remove all
+IPs and save to restore full isolation. Saving requires a compatible, running Keel service.
+
+The exception covers **all ports and protocols, in both directions**, for that VPN's programs
+on the selected adapter and hosts. Kernel/global port rules are not exempted. Other destinations
+and IPv6 remain blocked; other non-selected adapters remain fully blocked. Existing Windows
+firewall rules and the target server's firewall still apply. This does not enable subnet routing
+or approve routes in the VPN provider.
+
+Windows cannot distinguish a LAN relay socket from VPN transport to the same allowed address.
+**Do not add a LAN VPN peer or DERP endpoint** unless that additional transport path is intended.
+The GUI displays this warning and requires acknowledgment before committing a nonempty list.
+Missing/invalid adapters fail closed rather than falling back to another Ethernet adapter.
+
+Configuration fields in the VPN's `[[vpns]]` entry are `relay_interface` and `relay_hosts`.
+Old configurations keep an empty allowlist. Rule replacements use Windows-compatible CIDRs,
+compare the actual address filters, and keep old blocks until all replacements exist.
 
 ## Install
 
